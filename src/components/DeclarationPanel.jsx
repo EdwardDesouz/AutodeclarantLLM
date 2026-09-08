@@ -624,7 +624,7 @@ const HEADER_FIELD_SPECS = [
     type: "select",
     aliases: ["cargopacktype", "cargo_pack_type"],
     endpoint: "/getCargoTypeFromCommonMaster/",
-    default: "5 : Other Non-Containerized",
+    default: "5 : Other non-Containerized",
   },
   {
     key: "InwardTransportMode",
@@ -4843,7 +4843,7 @@ export default function DeclarationPanel({
           MSGId: res.data.MsgId,
           Refid: res.data.RefId,
           TradeNetMailboxID: res.data.TradeNetMailboxID,
-        DeclarantCompanyCode: res.data.Code,
+          DeclarantCompanyCode: res.data.Code,
           source: "generated",
         };
       }
@@ -4899,7 +4899,7 @@ export default function DeclarationPanel({
         MSGId: res.data.MsgId,
         Refid: res.data.RefId,
         TradeNetMailboxID: res.data.TradeNetMailboxID,
-        DeclarantCompanyCode: res.data.Code, 
+        DeclarantCompanyCode: res.data.Code,
         source: "generated",
       };
 
@@ -4951,7 +4951,7 @@ export default function DeclarationPanel({
     return { ...baseData, items: mergedItems, invoices: mergedInvoices };
   };
 
-const postHeader = async (d, ids) => {
+  const postHeader = async (d, ids) => {
     const items = Array.isArray(d.items) ? d.items : [];
     const invoices = Array.isArray(d.invoices) ? d.invoices : [];
 
@@ -5037,7 +5037,7 @@ const postHeader = async (d, ids) => {
           ? d.PermitGrossWeight
           : d.TotalGrossWeight || "",
       TotalGrossWeightUOM: d.TotalGrossWeightUnit || "",
-      BlanketStartDate: toApiDate(d.BlanketStartDate),
+      BlanketStartDate: toApiDate(d.BlanketStartDate) || "1900-01-01",
 
       NumberOfItems: items.length,
       TotalCIFFOBValue: totalCIFFOBValue,

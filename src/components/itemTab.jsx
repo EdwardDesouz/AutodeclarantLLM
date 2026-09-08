@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { FaSearch, FaTrash, FaPlus } from "react-icons/fa";
 import API from "../api/api";
 
@@ -118,12 +118,12 @@ function blankItem() {
     CorrectUom: "",
 
     DutiableQty: "",
-    DutiableUOM: "--Select--",
+    DutiableUOM: "",
     TotalDutiableQty: "",
-    TotalDutiableUOM: "--Select--",
+    TotalDutiableUOM: "",
     InvoiceQuantity: "",
     HSQty: "",
-    HSUOM: "--Select--",
+    HSUOM: "",
     AlcoholPercentage: "",
 
     InvoiceNo: "",
@@ -147,10 +147,10 @@ function blankItem() {
     GSTAmount: "",
     GSTRecalculate: false,
     ExciseDutyRate: 0,
-    ExciseDutyUOM: "--Select--",
+    ExciseDutyUOM: "",
     ExciseDutyAmount: "",
     CustomsDutyRate: 0,
-    CustomsDutyUOM: "--Select--",
+    CustomsDutyUOM: "",
     CustomsDutyAmount: "",
     OtherTaxRate: "",
     OtherTaxUOM: "",
@@ -186,6 +186,122 @@ function blankItem() {
     OptionalAmountInput: "",
     OptionalCharges: "",
   };
+}
+
+function parseFlag(v) {
+  if (v === true || v === 1 || v === "1") return true;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    return s === "true" || s === "yes";
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// HS CODE LOGIC (module scope so both ItemFieldsEditor and
+// buildEditDraftFromSavedRow can call it — this MUST NOT be nested inside
+// any component function).
+// ---------------------------------------------------------------------------
+
+function computeHsLogicFields(hsRow) {
+  if (!hsRow) return null;
+  const {
+    HSCode, UOM, DUTYTYPID, Kgmvisible, DuitableUom,
+    Excisedutyuom, Excisedutyrate, Customsdutyuom, Customsdutyrate, Inpayment,
+  } = hsRow;
+
+  const patch = {
+    DutyTypeId: DUTYTYPID,
+    KgmVisible: Kgmvisible,
+    IsControlled: String(Inpayment) === "1",
+
+    ShowVehicle: false,
+    ShowPacking: false,
+    ShowAlcohol: false,
+    ShowDutiableQuantity: false,
+    ShowOptionalCharges: false,
+
+    HSUOM: UOM || "--Select--",
+    CorrectUom: UOM || "",
+    DutiableUOM: UOM || "--Select--",
+    TotalDutiableUOM: DuitableUom || "--Select--",
+
+    ExciseDutyRate: 0,
+    ExciseDutyUOM: "--Select--",
+    CustomsDutyRate: 0,
+    CustomsDutyUOM: "--Select--",
+  };
+
+  if (Number(Inpayment) === 1) {
+    patch.ItemCascChecked = true;
+    patch.ShowItemCasc = true;
+  } else {
+    patch.ItemCascChecked = false;
+    patch.ShowItemCasc = false;
+  }
+
+  const applyDutyDefaults = () => {
+    patch.ExciseDutyUOM = Excisedutyuom == 0 ? "--Select--" : Excisedutyuom;
+    patch.CustomsDutyUOM = Customsdutyuom == 0 ? "--Select--" : Customsdutyuom;
+    patch.ExciseDutyRate = Excisedutyrate;
+    patch.CustomsDutyRate = Customsdutyrate;
+  };
+
+  if (DUTYTYPID === 62 || DUTYTYPID === 63) {
+    if (DUTYTYPID === 62 && UOM === "LTR") {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = true;
+      patch.ShowPacking = true;
+      patch.PackingChecked = true;
+    } else if ((DUTYTYPID === 63 && UOM === "KGM") || (DUTYTYPID === 62 && UOM !== "LTR")) {
+      patch.ShowDutiableQuantity = true;
+    } else {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = true;
+      patch.ShowPacking = true;
+      patch.PackingChecked = true;
+    }
+    if (DuitableUom === "A") patch.DutiableUOM = "--Select--";
+    applyDutyDefaults();
+  } else if (DUTYTYPID === 64) {
+    if (UOM !== "LTR") {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = false;
+    } else {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = true;
+      patch.ShowPacking = true;
+      patch.PackingChecked = true;
+    }
+    if (DuitableUom === "A") patch.DutiableUOM = "--Select--";
+    applyDutyDefaults();
+  } else if (DUTYTYPID === 61 || DUTYTYPID === 67) {
+    if (UOM === "LTR") {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = true;
+      patch.ShowPacking = true;
+      patch.PackingChecked = true;
+    } else if (UOM === "KGM") {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = false;
+    } else {
+      patch.ShowDutiableQuantity = false;
+      patch.ShowAlcohol = false;
+    }
+    applyDutyDefaults();
+  } else {
+    patch.DutiableUOM = "--Select--";
+    patch.TotalDutiableUOM = "--Select--";
+  }
+
+  if (HSCode && HSCode.startsWith("87")) {
+    patch.ShowVehicle = true;
+    patch.ShowDutiableQuantity = true;
+    patch.ShowOptionalCharges = true;
+    applyDutyDefaults();
+  }
+
+  return patch;
 }
 
 // ---------------------------------------------------------------------------
@@ -950,116 +1066,15 @@ function ItemFieldsEditor({
       ? item.Hawb || cargoHawbList[0] || ""
       : cargoHawbList[0] || item.Hawb || "";
 
-  // ---------------- HS CODE LOGIC (ported from applyHsLogic) ----------------
+  // ---------------- HS CODE LOGIC ----------------
+  // computeHsLogicFields itself now lives at module scope (see top of file)
+  // so buildEditDraftFromSavedRow can also use it. This component just
+  // calls it.
 
   const applyHsLogic = (hsRow) => {
-    if (!hsRow) return;
-    const {
-      HSCode,
-      UOM,
-      DUTYTYPID,
-      Kgmvisible,
-      DuitableUom,
-      Excisedutyuom,
-      Excisedutyrate,
-      Customsdutyuom,
-      Customsdutyrate,
-      Inpayment,
-    } = hsRow;
-
-    set("DutyTypeId", DUTYTYPID);
-    set("KgmVisible", Kgmvisible);
-    set("IsControlled", String(Inpayment) === "1");
-
-    // reset
-    set("ShowVehicle", false);
-    set("ShowPacking", false);
-    set("ShowAlcohol", false);
-    set("ShowDutiableQuantity", false);
-    set("ShowOptionalCharges", false);
-
-    set("HSUOM", UOM);
-    set("CorrectUom", UOM);
-    set("DutiableUOM", UOM);
-    set("TotalDutiableUOM", DuitableUom);
-
-    set("ExciseDutyRate", 0);
-    set("ExciseDutyUOM", "--Select--");
-    set("CustomsDutyRate", 0);
-    set("CustomsDutyUOM", "--Select--");
-
-    if (Number(hsRow.Inpayment) === 1) {
-      set("ItemCascChecked", true);
-      set("ShowItemCasc", true);
-    } else {
-      set("ItemCascChecked", false);
-      set("ShowItemCasc", false);
-    }
-
-    const setDutyDefaults = () => {
-      set("ExciseDutyUOM", Excisedutyuom == 0 ? "--Select--" : Excisedutyuom);
-      set(
-        "CustomsDutyUOM",
-        Customsdutyuom == 0 ? "--Select--" : Customsdutyuom,
-      );
-      set("ExciseDutyRate", Excisedutyrate);
-      set("CustomsDutyRate", Customsdutyrate);
-    };
-
-    if (DUTYTYPID === 62 || DUTYTYPID === 63) {
-      if (DUTYTYPID === 62 && UOM === "LTR") {
-        set("ShowDutiableQuantity", true);
-        set("ShowAlcohol", true);
-        set("ShowPacking", true);
-        set("PackingChecked", true);
-      } else if (
-        (DUTYTYPID === 63 && UOM === "KGM") ||
-        (DUTYTYPID === 62 && UOM !== "LTR")
-      ) {
-        set("ShowDutiableQuantity", true);
-      } else {
-        set("ShowDutiableQuantity", true);
-        set("ShowAlcohol", true);
-        set("ShowPacking", true);
-        set("PackingChecked", true);
-      }
-      if (DuitableUom === "A") set("TotalDutiableUOM", "--Select--");
-      setDutyDefaults();
-    } else if (DUTYTYPID === 64) {
-      if (UOM !== "LTR") {
-        set("ShowDutiableQuantity", true);
-        set("ShowAlcohol", false);
-      } else {
-        set("ShowDutiableQuantity", true);
-        set("ShowAlcohol", true);
-        set("ShowPacking", true);
-        set("PackingChecked", true);
-      }
-      if (DuitableUom === "A") set("TotalDutiableUOM", "--Select--");
-      setDutyDefaults();
-    } else if (DUTYTYPID === 61 || DUTYTYPID === 67) {
-      if (UOM === "LTR") {
-        set("ShowDutiableQuantity", true);
-        set("ShowAlcohol", true);
-        set("ShowPacking", true);
-        set("PackingChecked", true);
-      } else if (UOM === "KGM") {
-        set("ShowDutiableQuantity", true);
-        set("ShowAlcohol", false);
-      } else {
-        set("ShowDutiableQuantity", false);
-        set("ShowAlcohol", false);
-      }
-      setDutyDefaults();
-    }
-
-    // vehicle (HS code starts with 87)
-    if (HSCode && HSCode.startsWith("87")) {
-      set("ShowVehicle", true);
-      set("ShowDutiableQuantity", true);
-      set("ShowOptionalCharges", true);
-      setDutyDefaults();
-    }
+    const patch = computeHsLogicFields(hsRow);
+    if (!patch) return;
+    Object.entries(patch).forEach(([k, v]) => set(k, v));
   };
 
   const handleHsCodeSelect = (hsItem) => {
@@ -1082,6 +1097,8 @@ function ItemFieldsEditor({
         set("HSUOM", "--Select--");
         set("ExciseDutyRate", 0);
         set("ExciseDutyUOM", "--Select--");
+        set("CustomsDutyRate", 0);
+        set("CustomsDutyUOM", "--Select--");
       }
       return;
     }
@@ -1094,12 +1111,11 @@ function ItemFieldsEditor({
   // ---------------- UOM validation (derived, no extra state) ----------------
 
   const hsUomError =
-    item.HSUOM === "--Select--"
+    item.HSUOM === ""
       ? "PLEASE CHECK UOM"
       : item.HSUOM && item.CorrectUom && item.HSUOM !== item.CorrectUom
         ? "INVALID UOM FOR THIS HS CODE"
         : "";
-
   // ---------------- Invoice Quantity -> HS Quantity conversion ----------------
 
   const itemInvoiceQuantityFunction = () => {
@@ -1338,7 +1354,7 @@ function ItemFieldsEditor({
     set("PreferentialCode", value);
     if (value === "PRF : if goods are imported under preferential duty rates") {
       set("CustomsDutyRate", "0.00");
-      set("CustomsDutyUOM", "--Select--");
+      set("CustomsDutyUOM", "");
       set("CustomsDutyAmount", "0.00");
     }
   };
@@ -1447,8 +1463,6 @@ function ItemFieldsEditor({
 
   // ---------------- Lot id / shipping marks toggles ----------------
 
-  // ---------------- Lot id / shipping marks toggles ----------------
-
   const toggleLotId = (checked) => {
     set("ShowLotId", checked);
     if (!checked) {
@@ -1477,8 +1491,7 @@ function ItemFieldsEditor({
     if (!item.Brand?.trim()) errors.Brand = "FILL BRAND";
     if (item.HSQty === "" || Number(item.HSQty) === 0)
       errors.HSQty = "FILL HS QUANTITY";
-    if (item.HSUOM === "--Select--" || !item.HSUOM)
-      errors.HSUOM = "PLEASE CHECK UOM";
+    if (!item.HSUOM) errors.HSUOM = "PLEASE CHECK UOM";
     if (!item.InvoiceNo) errors.InvoiceNo = "CHOOSE INVOICE";
     if (item.TotalLineAmount === "" || Number(item.TotalLineAmount) === 0) {
       errors.TotalLineAmount = "FILL TOTAL LINE AMOUNT";
@@ -1546,23 +1559,25 @@ function ItemFieldsEditor({
     MessageType: "IPTDEC",
     HSCode: item.HSCode || "",
     Description: (item.Description || "").toUpperCase(),
-    DGIndicator: item.DGIndicator ? "Yes" : "No",
+    DGIndicator: item.DGIndicator ? "True" : "False",
     Contry: item.Country || "",
     EndUserDescription: "",
     Brand: item.Brand || "",
     Model: item.Model || "",
     InHAWBOBL: effectiveHawb || "",
     OutHAWBOBL: "",
+
     DutiableQty: item.DutiableQty || 0,
-    DutiableUOM: item.DutiableUOM || "",
-    TotalDutiableQty: item.TotalDutiableQty || 0,
-    TotalDutiableUOM: item.TotalDutiableUOM || "",
+
+    DutiableUOM: item.DutiableUOM || "--Select--",
+    TotalDutiableUOM: item.TotalDutiableUOM || "--Select--",
     InvoiceQuantity: item.InvoiceQuantity || 0,
     HSQty: item.HSQty || 0,
-    HSUOM: item.HSUOM || "",
+    HSUOM: item.HSUOM || "--Select--",
+
     AlcoholPer: item.AlcoholPercentage || 0,
     InvoiceNo: item.InvoiceNo || "",
-    ChkUnitPrice: item.ChkUnitPrice === true,
+    ChkUnitPrice: item.ChkUnitPrice ? "True" : "False",
     UnitPrice: item.UnitPrice || 0,
     UnitPriceCurrency: item.UnitPriceCurrency || "",
     ExchangeRate: item.ExchangeRate || 0,
@@ -1570,14 +1585,15 @@ function ItemFieldsEditor({
     TotalLineAmount: item.TotalLineAmount || 0,
     InvoiceCharges: item.InvoiceCharges || 0,
     CIFFOB: Number(item.CIFFOB || 0).toFixed(2),
+
     OPQty: item.OPQty || 0,
-    OPUOM: item.OPUOM || "",
+    OPUOM: item.OPUOM || "--Select--",
     IPQty: item.IPQty || 0,
-    IPUOM: item.IPUOM || "",
+    IPUOM: item.IPUOM || "--Select--",
     InPqty: item.InPQty || 0,
-    InPUOM: item.InPUOM || "",
+    InPUOM: item.InPUOM || "--Select--",
     ImPQty: item.ImPQty || 0,
-    ImPUOM: item.ImPUOM || "",
+    ImPUOM: item.ImPUOM || "--Select--",
     PreferentialCode: item.PreferentialCode || "",
     GSTRate: item.GSTRate,
     GSTUOM: item.GSTUOM || "",
@@ -1589,25 +1605,25 @@ function ItemFieldsEditor({
     CustomsDutyUOM: item.CustomsDutyUOM || "",
     CustomsDutyAmount: item.CustomsDutyAmount || 0,
     OtherTaxRate: item.OtherTaxRate || 0,
-    OtherTaxUOM: item.OtherTaxUOM || "",
+    OtherTaxUOM: item.OtherTaxUOM || "--Select--",
     OtherTaxAmount: item.OtherTaxAmount || 0,
     LSPValue: item.LastSellingPrice || 0,
     CurrentLot: item.CurrentLot || "",
     PreviousLot: item.PreviousLot || "",
-    Making: item.Making || "",
+    Making: item.Making || "--Select--",
     ShippingMarks1: item.ShippingMarks1 || "",
     ShippingMarks2: item.ShippingMarks2 || "",
     ShippingMarks3: item.ShippingMarks3 || "",
     ShippingMarks4: item.ShippingMarks4 || "",
     TouchUser: (user?.username || "").toUpperCase(),
     TouchTime: new Date().toISOString(),
-    VehicleType: item.VehicleType || "",
-    OptionalChrgeUOM: item.OptionalCurrency || "",
+    VehicleType: item.VehicleType || "--Select--",
+    OptionalChrgeUOM: item.OptionalCurrency || "--Select--",
     EngineCapcity: item.EngineCapacity || "",
     Optioncahrge: item.OptionalCharges || 0,
     OptionalSumtotal: item.OptionalAmountInput || 0,
     OptionalSumExchage: item.OptionalRate || 0,
-    EngineCapUOM: item.EngineCapacityUOM || "",
+    EngineCapUOM: item.EngineCapacityUOM || "--Select--",
     orignaldatereg: item.OriginalRegDate || "",
   });
 
@@ -2425,6 +2441,120 @@ function ItemFieldsEditor({
   );
 }
 
+function buildEditDraftFromSavedRow(raw, hsCodeSuggestions) {
+  const hsRow = hsCodeSuggestions.find(
+    (h) =>
+      String(h.HSCode || "").toLowerCase() ===
+      String(raw.HSCode || "").toLowerCase(),
+  );
+  const hsPatch = computeHsLogicFields(hsRow) || {};
+
+  const draft = {
+    ...blankItem(),
+    ...hsPatch,
+
+    ItemNo: raw.ItemNo,
+    HSCode: raw.HSCode || "",
+    Description: raw.Description || "",
+    DGIndicator: parseFlag(raw.DGIndicator),
+    Country: raw.Contry || "",
+    Brand: raw.Brand || "",
+    Unbranded: String(raw.Brand || "").toUpperCase() === "UNBRANDED",
+    Model: raw.Model || "",
+    Hawb: raw.InHAWBOBL || "",
+
+    DutiableQty: fmt(raw.DutiableQty, 2),
+    DutiableUOM: raw.DutiableUOM || "--Select--",
+    TotalDutiableQty: fmt(raw.TotalDutiableQty, 4),
+    TotalDutiableUOM: raw.TotalDutiableUOM || "--Select--",
+    InvoiceQuantity: fmt(raw.InvoiceQuantity, 4),
+
+    VehicleType: raw.VehicleType || "--Select--",
+    EngineCapacity: raw.EngineCapcity || "",
+    EngineCapacityUOM: raw.EngineCapUOM || "--Select--",
+    OriginalRegDate: raw.orignaldatereg || "",
+
+    HSQty: fmt(raw.HSQty, 4),
+    HSUOM: raw.HSUOM || "--Select--",
+    AlcoholPercentage: fmt(raw.AlcoholPer, 2),
+
+    InvoiceNo: raw.InvoiceNo || "",
+    ChkUnitPrice: parseFlag(raw.ChkUnitPrice),
+    UnitPrice: fmt(raw.UnitPrice, 2),
+    UnitPriceCurrency: raw.UnitPriceCurrency || "",
+    ExchangeRate: fmt(raw.ExchangeRate, 6),
+    SumExchangeRate: fmt(raw.SumExchangeRate, 2),
+    TotalLineAmount: fmt(raw.TotalLineAmount, 2),
+    InvoiceCharges: fmt(raw.InvoiceCharges, 2),
+    CIFFOB: fmt(raw.CIFFOB, 2),
+
+    OPQty: fmt(raw.OPQty, 2),
+    OPUOM: raw.OPUOM || "--Select--",
+    IPQty: fmt(raw.IPqty ?? raw.IPQty, 2),
+    IPUOM: raw.IPUOM || "--Select--",
+    InPQty: fmt(raw.InPqty, 2),
+    InPUOM: raw.InPUOM || "--Select--",
+    ImPQty: fmt(raw.ImPQty, 2),
+    ImPUOM: raw.ImPUOM || "--Select--",
+
+    PreferentialCode: raw.PreferentialCode || "",
+    GSTRate: fmt(raw.GSTRate, 4),
+    GSTUOM: raw.GSTUOM || "PER",
+    GSTAmount: fmt(raw.GSTAmount, 2),
+    ExciseDutyRate: fmt(raw.ExciseDutyRate, 2),
+    ExciseDutyUOM: raw.ExciseDutyUOM || "--Select--",
+    ExciseDutyAmount: fmt(raw.ExciseDutyAmount, 2),
+    CustomsDutyRate: fmt(raw.CustomsDutyRate, 2),
+    CustomsDutyUOM: raw.CustomsDutyUOM || "--Select--",
+    CustomsDutyAmount: fmt(raw.CustomsDutyAmount, 2),
+    OtherTaxRate: fmt(raw.OtherTaxRate, 4),
+    OtherTaxUOM: raw.OtherTaxUOM || "--Select--",
+    OtherTaxAmount: fmt(raw.OtherTaxAmount, 2),
+    LastSellingPrice: fmt(raw.LSPValue, 2),
+
+    CurrentLot: raw.CurrentLot || "",
+    Making: raw.Making || "--Select--",
+    PreviousLot: raw.PreviousLot || "",
+
+    ShippingMarks1: raw.ShippingMarks1 || "",
+    ShippingMarks2: raw.ShippingMarks2 || "",
+    ShippingMarks3: raw.ShippingMarks3 || "",
+    ShippingMarks4: raw.ShippingMarks4 || "",
+
+    OptionalCurrency: raw.OptionalChrgeUOM || "--Select--",
+    OptionalRate: raw.OptionalSumExchage || "",
+    OptionalAmountInput: raw.OptionalSumtotal || "",
+    OptionalCharges: raw.Optioncahrge || "",
+  };
+
+  const hasPacking =
+    Number(raw.OPQty) > 0 ||
+    String(raw.OPUOM || "").trim() !== "" ||
+    Number(raw.IPqty ?? raw.IPQty) > 0 ||
+    String(raw.IPUOM || "").trim() !== "" ||
+    Number(raw.InPqty) > 0 ||
+    String(raw.InPUOM || "").trim() !== "" ||
+    Number(raw.ImPQty) > 0 ||
+    String(raw.ImPUOM || "").trim() !== "";
+  draft.PackingChecked = hasPacking;
+  draft.ShowPacking = hasPacking;
+
+  draft.ShowLotId = !!(
+    raw.CurrentLot?.trim() ||
+    raw.Making?.trim() ||
+    raw.PreviousLot?.trim()
+  );
+
+  draft.ShowShippingMarks = !!(
+    raw.ShippingMarks1?.trim() ||
+    raw.ShippingMarks2?.trim() ||
+    raw.ShippingMarks3?.trim() ||
+    raw.ShippingMarks4?.trim()
+  );
+
+  return draft;
+}
+
 function normalizeIncomingItem(raw) {
   if (!raw || typeof raw !== "object") return blankItem();
   const base = { ...blankItem(), ...raw };
@@ -2735,6 +2865,8 @@ export default function ItemsTabContent({ data, onEdit, permitId, user }) {
   const rawItems = Array.isArray(data.items) ? data.items : [];
   const cargoHawbList = parseHawbList(data.Hawb);
 
+  const hsCodeSuggestions = useHsCodeSuggestions();
+
   const savedRawItems = rawItems.filter(hasSavedItemNo);
   const unsavedRawItems = rawItems.filter((i) => !hasSavedItemNo(i));
 
@@ -2778,7 +2910,7 @@ export default function ItemsTabContent({ data, onEdit, permitId, user }) {
 
   // ---------------- Load draft whenever selection changes ----------------
 
-  const loadSavedIntoDraft = (itemNoOrIndex) => {
+  const loadSavedIntoDraft = async (itemNoOrIndex) => {
     const row =
       typeof itemNoOrIndex === "number" &&
       !savedRawItems.some((i) => i.ItemNo === itemNoOrIndex)
@@ -2786,22 +2918,64 @@ export default function ItemsTabContent({ data, onEdit, permitId, user }) {
         : savedRawItems.find((i) => i.ItemNo === itemNoOrIndex);
     if (!row) return;
 
-    const normalized = normalizeIncomingItem(row);
+    let draft = buildEditDraftFromSavedRow(row, hsCodeSuggestions);
+
     const matchedInvoice = invoiceNumbers.find(
-      (inv) => inv.InvoiceNo === normalized.InvoiceNo,
+      (inv) => inv.InvoiceNo === draft.InvoiceNo,
     );
-    const draft = matchedInvoice
-      ? {
-          ...normalized,
-          UnitPriceCurrency: matchedInvoice.TICurrency,
-          ExchangeRate: matchedInvoice.TIExRate,
-        }
-      : normalized;
+    if (matchedInvoice) {
+      draft = {
+        ...draft,
+        UnitPriceCurrency: matchedInvoice.TICurrency,
+        ExchangeRate: matchedInvoice.TIExRate,
+      };
+    }
 
     onEdit(["itemDraft"], draft);
     setSelection({ type: "saved", itemNo: row.ItemNo ?? itemNoOrIndex });
-  };
 
+    if (!permitId) return;
+    try {
+      const res = await API.get(`/getCasc/${permitId}/`);
+      const filtered = (res.data || []).filter(
+        (c) => String(c.ItemNo) === String(row.ItemNo),
+      );
+      const maxCascBoxes = 3;
+      const finalCasc = Array.from({ length: maxCascBoxes }, () => ({
+        code: "",
+        hsQuantity: 0,
+        uom: "",
+        casc: [],
+      }));
+      filtered.forEach((c) => {
+        const cascIndex =
+          parseInt(String(c.CASCId).replace("Casc", ""), 10) - 1;
+        if (cascIndex < 0 || cascIndex >= maxCascBoxes) return;
+        if (!finalCasc[cascIndex].code) {
+          finalCasc[cascIndex] = {
+            ...finalCasc[cascIndex],
+            code: c.ProductCode,
+            hsQuantity: c.Quantity,
+            uom: c.ProductUOM,
+          };
+        }
+        finalCasc[cascIndex].casc.push([
+          c.CascCode1 || "",
+          c.CascCode2 || "",
+          c.CascCode3 || "",
+        ]);
+      });
+      const hasCasc = filtered.length > 0;
+      onEdit(["itemDraft"], {
+        ...draft,
+        ItemCasc: finalCasc,
+        ItemCascChecked: hasCasc,
+        ShowItemCasc: hasCasc,
+      });
+    } catch (err) {
+      console.error("CASC fetch failed", err);
+    }
+  };
   const loadPendingIntoDraft = (index) => {
     const raw = unsavedRawItems[index];
     if (!raw) return;
