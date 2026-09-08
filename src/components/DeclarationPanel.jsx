@@ -190,6 +190,7 @@ const PARTY_TYPES = {
     commonEndpoint: "/getCommonImporterTableInfo/",
     inpaymentEndpoint: "inpayment/getInImporterTableInfo/",
     saveEndpoint: "/postImporterTable/",
+    inpaymentSaveEndpoint: "inpayment/postInImporterTable/",
   },
   inwardCarrierAgent: {
     dataKey: "InwardCarrierAgent",
@@ -197,6 +198,7 @@ const PARTY_TYPES = {
     commonEndpoint: "/getCommonInwardCarrierAgentTableInfo/",
     inpaymentEndpoint: "inpayment/getInInwardCarrierAgentTableInfo/",
     saveEndpoint: "/postInwardCarrierAgentTable/",
+    inpaymentSaveEndpoint: "inpayment/postInInwardCarrierAgentTable/",
     defaultCode: "SATS LTD",
   },
   freightForwarder: {
@@ -205,6 +207,7 @@ const PARTY_TYPES = {
     commonEndpoint: "/getCommonFreightForwarderTable/",
     inpaymentEndpoint: "inpayment/getInFreightForwarderTable/",
     saveEndpoint: "/postFreightForwarderTable/",
+    inpaymentSaveEndpoint: "inpayment/postInFreightForwarderTable/",
     defaultCode: "LINEHAUL EXPRESS",
   },
   claimantParty: {
@@ -213,6 +216,7 @@ const PARTY_TYPES = {
     commonEndpoint: "/getCommonClaimantPartyTable/",
     inpaymentEndpoint: "inpayment/getInClaimantPartyTable/",
     saveEndpoint: "/postClaimantPartyTable/",
+    inpaymentSaveEndpoint: "inpayment/postInClaimantPartyTable/",
     hasClaimantNameFields: true,
   },
 };
@@ -2260,40 +2264,78 @@ function MasterPartyField({ type, data, onEdit }) {
       return;
     }
 
-    const payload = {
+    const code = (party.Code || "").toUpperCase();
+    const cruei = (party.CRUEI || "").toUpperCase();
+    const name = (party.Name || "").toUpperCase();
+    const name1 = (party.Name1 || "").toUpperCase();
+    const claimantExtra = cfg.hasClaimantNameFields
+      ? {
+          ClaimantName: (party.ClaimantName || "").toUpperCase(),
+          ClaimantName1: (party.ClaimantName1 || "").toUpperCase(),
+          Name2: "",
+        }
+      : {};
+    const touchUser = DEFAULT_TOUCH_USER;
+    const touchTime = new Date().toISOString();
+
+    const commonPayload = {
       Id: 0,
-      [codeKey]: (party.Code || "").toUpperCase(),
-      CRUEI: (party.CRUEI || "").toUpperCase(),
-      Name: (party.Name || "").toUpperCase(),
-      Name1: (party.Name1 || "").toUpperCase(),
-      ...(cfg.hasClaimantNameFields
-        ? {
-            ClaimantName: (party.ClaimantName || "").toUpperCase(),
-            ClaimantName1: (party.ClaimantName1 || "").toUpperCase(),
-            Name2: "",
-          }
-        : {}),
-      TouchUser: DEFAULT_TOUCH_USER,
-      TouchTime: new Date().toISOString(),
+      [codeKey]: code,
+      CRUEI: cruei,
+      Name: name,
+      Name1: name1,
+      ...claimantExtra,
+      TouchUser: touchUser,
+      TouchTime: touchTime,
       Status: "Active",
     };
 
+    const inpaymentPayload = {
+      Id: 0,
+      [codeKey]: code,
+      CRUEI: cruei,
+      Name: name,
+      Name1: name1,
+      ...claimantExtra,
+      TouchUser: touchUser,
+      TouchTime: touchTime,
+      Status: "Active",
+    };
+
+    let commonSaved = false;
     try {
-      const response = await API.post(cfg.saveEndpoint, payload);
-      alert(
-        response.data?.message ||
-          response.data?.Result ||
-          `${cfg.label} saved successfully!`,
-      );
-      console.log(`Saved ${cfg.label}:`, response.data);
-      commonCodes.add(party.Code.toLowerCase());
+      const commonResponse = await API.post(cfg.saveEndpoint, commonPayload);
+      commonSaved = true;
+      console.log(`Saved to Common${cfg.label}:`, commonResponse.data);
+
+      if (cfg.inpaymentSaveEndpoint) {
+        const inpaymentResponse = await API.post(
+          cfg.inpaymentSaveEndpoint,
+          inpaymentPayload,
+        );
+        console.log(
+          `Saved to ${cfg.label} (inpayment):`,
+          inpaymentResponse.data,
+        );
+      }
+
+      alert(`${cfg.label} saved successfully in both tables!`);
+      commonCodes.add(code.toLowerCase());
     } catch (err) {
       console.error(`Failed to save ${cfg.label}:`, err.response?.data || err);
-      alert(
-        err.response?.data?.error ||
-          err.response?.data?.Result ||
-          `Failed to save ${cfg.label}, check console for details`,
-      );
+      if (commonSaved) {
+        alert(
+          `Warning: Code "${code}" was saved to Common${cfg.label} but FAILED to save to ${cfg.label} (inpayment) table. ` +
+            `Tables are now inconsistent.\n\nError: ${err.response?.data?.error || err.response?.data?.Result || err.message}`,
+        );
+        commonCodes.add(code.toLowerCase());
+      } else {
+        alert(
+          err.response?.data?.error ||
+            err.response?.data?.Result ||
+            `Failed to save ${cfg.label}, check console for details`,
+        );
+      }
     }
   };
 
@@ -4753,7 +4795,7 @@ export default function DeclarationPanel({
         MSGId: msgKey ? d[msgKey] : "",
         Refid: d.Refid || "",
         TradeNetMailboxID: d.TradeNetMailboxID || "",
-        DeclarantCompanyCode: d.DeclarantCompanyCode || d.DeclarantCode || "",
+        DeclarantCompanyCode: d.DeclarantCompanyCode || "",
         source: "existing",
       };
     });
@@ -4801,7 +4843,7 @@ export default function DeclarationPanel({
           MSGId: res.data.MsgId,
           Refid: res.data.RefId,
           TradeNetMailboxID: res.data.TradeNetMailboxID,
-          DeclarantCompanyCode: res.data.DeclarantCode,
+        DeclarantCompanyCode: res.data.Code,
           source: "generated",
         };
       }
@@ -4857,7 +4899,7 @@ export default function DeclarationPanel({
         MSGId: res.data.MsgId,
         Refid: res.data.RefId,
         TradeNetMailboxID: res.data.TradeNetMailboxID,
-        DeclarantCompanyCode: res.data.DeclarantCode,
+        DeclarantCompanyCode: res.data.Code, 
         source: "generated",
       };
 
@@ -4909,7 +4951,7 @@ export default function DeclarationPanel({
     return { ...baseData, items: mergedItems, invoices: mergedInvoices };
   };
 
-  const postHeader = async (d, ids) => {
+const postHeader = async (d, ids) => {
     const items = Array.isArray(d.items) ? d.items : [];
     const invoices = Array.isArray(d.invoices) ? d.invoices : [];
 
@@ -4919,8 +4961,6 @@ export default function DeclarationPanel({
     };
     const toDecimal = toNum;
 
-    // Mirrors Summary.jsx exactly: CIF/FOB and GST totals come from the
-    // saved item rows (CIFFOB, GSTAmount) — not from the invoice table.
     const totalCIFFOBValue = items.reduce(
       (sum, it) => sum + toNum(it.CIFFOB),
       0,
@@ -4947,6 +4987,12 @@ export default function DeclarationPanel({
         ? totalODutyAmt + totalExDutyAmt + totalGSTTaxAmt + totalCusDutyAmt
         : totalGSTTaxAmt;
 
+    // Mirrors Summary.jsx's PermitNumber handling: read whatever the
+    // declaration/permit already carries, and treat the literal strings
+    // "None"/"NONE" as empty — same as doSavePermit() does.
+    let permitNumber = d.PermitNumber || ids.PermitNumber || "";
+    if (permitNumber === "None" || permitNumber === "NONE") permitNumber = "";
+
     const payload = {
       PermitId: ids.PermitId,
       JobId: ids.JobId,
@@ -4955,42 +5001,42 @@ export default function DeclarationPanel({
       TradeNetMailboxID: ids.TradeNetMailboxID,
       DeclarantCompanyCode: ids.DeclarantCompanyCode,
       MessageType: d.MessageType || "IPTDEC",
-      DeclarationType: d.DeclarationType,
-      PreviousPermit: d.PreviousPermitNo,
-      CargoPackType: d.CargoPackType,
-      InwardTransportMode: d.InwardTransportMode,
-      BGIndicator: d.BgIndicator,
-      SupplyIndicator: d.SupplyIndicator ? "Y" : "N",
-      ReferenceDocuments: d.ReferenceDocument ? "Y" : "N",
-      License: d.License || "",
-      Recipient: d.Recipient || "",
-      ImporterCompanyCode: d.Importer?.Code,
-      InwardCarrierAgentCode: d.InwardCarrierAgent?.Code,
-      FreightForwarderCode: d.FreightForwarder?.Code,
-      ClaimantPartyCode: d.ClaimantParty?.Code,
-      HBL: d.Hawb,
+      DeclarationType: d.DeclarationType || "--Select--",
+      PreviousPermit: d.PreviousPermitNo || "",
+      CargoPackType: d.CargoPackType || "--Select--",
+      InwardTransportMode: d.InwardTransportMode || "--Select--",
+      BGIndicator: d.BgIndicator || "--Select--",
+      SupplyIndicator: d.SupplyIndicator ? "true" : "false",
+      ReferenceDocuments: d.ReferenceDocument ? "true" : "false",
+      License: d.License || ",,,,",
+      Recipient: d.Recipient || "--",
+      ImporterCompanyCode: d.Importer?.Code || "",
+      InwardCarrierAgentCode: d.InwardCarrierAgent?.Code || "",
+      FreightForwarderCode: d.FreightForwarder?.Code || "",
+      ClaimantPartyCode: d.ClaimantParty?.Code || "",
+      HBL: d.Hawb || "",
       ArrivalDate: toApiDate(d.ArrivalDate),
-      LoadingPortCode: d.LoadingPort?.Code,
+      LoadingPortCode: d.LoadingPort?.Code || "",
       VoyageNumber: d.VoyageNumber || "",
       VesselName: d.VesselName || "",
       OceanBillofLadingNo: d.Obl || "",
       ConveyanceRefNo: d.ConveyanceNumber || "",
       TransportId: d.TransportDetails || "",
-      FlightNO: d.FlightNumber,
-      AircraftRegNo: d.AircraftRegNo,
-      MasterAirwayBill: d.Mawb,
-      ReleaseLocation: d.ReleaseLocation?.Code,
-      ResLoaName: d.ReleaseLocation?.Name,
-      RecepitLocation: d.ReceiptLocation?.Code,
-      RecepitLocName: d.ReceiptLocation?.Name,
-      TotalOuterPack: d.TotalOuterPack,
-      TotalOuterPackUOM: d.TotalOuterPackUnit,
+      FlightNO: d.FlightNumber || "",
+      AircraftRegNo: d.AircraftRegNo || "",
+      MasterAirwayBill: d.Mawb || "",
+      ReleaseLocation: d.ReleaseLocation?.Code || "",
+      ResLoaName: d.ReleaseLocation?.Name || "",
+      RecepitLocation: d.ReceiptLocation?.Code || "",
+      RecepitLocName: d.ReceiptLocation?.Name || "",
+      TotalOuterPack: d.TotalOuterPack || "",
+      TotalOuterPackUOM: d.TotalOuterPackUnit || "",
 
       TotalGrossWeight:
         d.PermitGrossWeight !== "" && d.PermitGrossWeight != null
           ? d.PermitGrossWeight
-          : d.TotalGrossWeight,
-      TotalGrossWeightUOM: d.TotalGrossWeightUnit,
+          : d.TotalGrossWeight || "",
+      TotalGrossWeightUOM: d.TotalGrossWeightUnit || "",
       BlanketStartDate: toApiDate(d.BlanketStartDate),
 
       NumberOfItems: items.length,
@@ -5001,20 +5047,17 @@ export default function DeclarationPanel({
       TotalODutyAmt: totalODutyAmt,
       TotalAmtPay: totalAmountPayable,
       Status: "LLMNEW",
-      // Preserve whatever prmtStatus this declaration/permit already has —
-      // only default to "NEW" for a genuinely first-time permit that has
-      // never had a status set (checks both casing variants defensively).
       prmtStatus: d.prmtStatus || d.PrmtStatus || ids.prmtStatus || "NEW",
-      PermitNumber: "",
-      Cnb: d.Cnb ? "Y" : "N",
-      DeclareIndicator: d.DeclarationChecked ? "Y" : "N",
+      PermitNumber: permitNumber,
+      Cnb: d.Cnb ? "true" : "false",
+      DeclareIndicator: d.DeclarationChecked ? "true" : "false",
       DeclarningFor: d.DeclFor || "--Select--",
       GrossReference: d.CrossReference || "",
       TradeRemarks: d.TradeRemarks || "",
       InternalRemarks: d.InternalRemarks || "",
       CustomerRemarks: d.CustomerRemarks || "",
       gstVerified: d.ApprovedBy || "",
-      MRDate: toApiDate(d.MRDate) || null,
+      MRDate: toApiDate(d.MRDate),
       MRTime: d.MRTime || "",
 
       TouchUser: DEFAULT_TOUCH_USER,
