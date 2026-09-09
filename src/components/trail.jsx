@@ -1,11 +1,8 @@
-import { useState, useEffect, useRef } from "react";
-import { FaSearch, FaPlus } from "react-icons/fa";
-import StatusStamp from "./StatusStamp";
+import { useState, useEffect, useMemo } from "react";
+import { FaSearch, FaTrash, FaPlus } from "react-icons/fa";
 import API from "../api/api";
-import ItemsTabContent from "./itemTab";
-import InvoiceTabContent from "./invoiceTab";
 
-export const C = {
+const C = {
   panelBorder: "#c2d7e8",
   bar: "#0f3c52",
   barText: "#eaf3f9",
@@ -20,720 +17,339 @@ export const C = {
   tabIdleBg: "#eef2f5",
 };
 
-export const DEFAULT_TOUCH_USER = "LNXADMIN";
-
-function toApiDate(dateStr) {
-  if (!dateStr) return null;
-  const parts = String(dateStr).split("/");
-  if (parts.length !== 3) return null;
-  const [day, month, year] = parts;
-  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+function fmt(val, decimals = 2) {
+  const num = parseFloat(val);
+  return isNaN(num) ? (0).toFixed(decimals) : num.toFixed(decimals);
 }
 
-function isPlainObject(val) {
-  return val !== null && typeof val === "object" && !Array.isArray(val);
-}
-
-function formatLabel(key) {
-  return String(key)
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function isScalarValue(v) {
-  return !Array.isArray(v) && !isPlainObject(v);
-}
-
-function groupEntries(entries) {
-  const groups = [];
-  let current = null;
-  entries.forEach(([key, value]) => {
-    if (isScalarValue(value)) {
-      if (!current || current.type !== "scalar") {
-        current = { type: "scalar", items: [] };
-        groups.push(current);
-      }
-      current.items.push([key, value]);
-    } else {
-      groups.push({ type: "complex", items: [[key, value]] });
-      current = null;
-    }
-  });
-  return groups;
-}
-
-function ScalarFieldGrid({ items, path, onEdit, labelStyle }) {
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr",
-        gap: "10px 14px",
-        marginBottom: 14,
-      }}
-    >
-      {items.map(([key, value]) => (
-        <div key={key} className="decl-field-row">
-          <span
-            className="decl-field-label"
-            style={{
-              display: "block",
-              marginBottom: 6,
-              ...labelStyle,
-            }}
-          >
-            {formatLabel(key)}
-          </span>
-          <span className="decl-field-value">
-            <EditableValue
-              value={value}
-              path={[...path, key]}
-              onEdit={onEdit}
-            />
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function renderGroupedEntries(
-  entries,
-  path,
-  onEdit,
-  { labelStyle, renderComplex },
-) {
-  const groups = groupEntries(entries);
-  return groups.map((g, i) => {
-    if (g.type === "scalar") {
-      return (
-        <ScalarFieldGrid
-          key={`grp-${i}`}
-          items={g.items}
-          path={path}
-          onEdit={onEdit}
-          labelStyle={labelStyle}
-        />
-      );
-    }
-    const [key, value] = g.items[0];
-    return renderComplex(key, value);
-  });
-}
-// --- END GROUPING HELPERS ---
-
-const ITEM_FIELD_SPECS = [
-  {
-    key: "code",
-    label: "HS Code",
-    aliases: ["code", "hscode", "hs_code", "commoditycode", "commodity_code"],
-  },
-  {
-    key: "description",
-    label: "Description",
-    aliases: ["description", "desc"],
-  },
-  { key: "quantity", label: "Quantity", aliases: ["quantity", "qty"] },
-  {
-    key: "unitValue",
-    label: "Unit Value",
-    aliases: ["unitvalue", "unit_value", "unitprice"],
-  },
-  {
-    key: "totalValue",
-    label: "Total Value",
-    aliases: ["totalvalue", "total_value"],
-  },
-  { key: "country", label: "Country", aliases: ["country"] },
-  {
-    key: "countryOfManufacture",
-    label: "Country Of Manufacture",
-    aliases: [
-      "countryofmanufacture",
-      "country_of_manufacture",
-      "coo",
-      "countryoforigin",
-    ],
-  },
-];
-
-function isItemsField(key) {
-  return typeof key === "string" && key.trim().toLowerCase() === "items";
-}
-
-function normalizeKey(k) {
-  return String(k)
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-}
-
-export function findRowKey(row, aliases) {
-  const keys = Object.keys(row || {});
-  return keys.find((k) => aliases.includes(normalizeKey(k)));
-}
-
-function getNestedCI(obj, outerAliases, innerAliases) {
-  const outerKey = findRowKey(obj, outerAliases);
-  const inner = outerKey ? obj[outerKey] : null;
-  if (!isPlainObject(inner)) return "";
-  const innerKey = findRowKey(inner, innerAliases);
-  return innerKey ? inner[innerKey] : "";
-}
-
-const PARTY_TOP_LEVEL_FIELDS = ["shipper", "receiver"];
-const PARTY_TOP_LEVEL_FIELD_KEYS = PARTY_TOP_LEVEL_FIELDS.map(normalizeKey);
-
-const PARTY_TYPES = {
-  importer: {
-    dataKey: "Importer",
-    label: "Importer",
-    commonEndpoint: "/getCommonImporterTableInfo/",
-    inpaymentEndpoint: "inpayment/getInImporterTableInfo/",
-    saveEndpoint: "/postImporterTable/",
-  },
-  inwardCarrierAgent: {
-    dataKey: "InwardCarrierAgent",
-    label: "Inward Carrier Agent",
-    commonEndpoint: "/getCommonInwardCarrierAgentTableInfo/",
-    inpaymentEndpoint: "inpayment/getInInwardCarrierAgentTableInfo/",
-    saveEndpoint: "/postInwardCarrierAgentTable/",
-    defaultCode: "SATS LTD",
-  },
-  freightForwarder: {
-    dataKey: "FreightForwarder",
-    label: "Freight Forwarder",
-    commonEndpoint: "/getCommonFreightForwarderTable/",
-    inpaymentEndpoint: "inpayment/getInFreightForwarderTable/",
-    saveEndpoint: "/postFreightForwarderTable/",
-    defaultCode: "LINEHAUL EXPRESS",
-  },
-  claimantParty: {
-    dataKey: "ClaimantParty",
-    label: "Claimant Party",
-    commonEndpoint: "/getCommonClaimantPartyTable/",
-    inpaymentEndpoint: "inpayment/getInClaimantPartyTable/",
-    saveEndpoint: "/postClaimantPartyTable/",
-    hasClaimantNameFields: true,
-  },
-};
-
-const MASTER_PARTY_DATA_KEYS = Object.values(PARTY_TYPES).map(
-  (cfg) => cfg.dataKey,
-);
-
-function blankMasterParty(cfg) {
-  return {
-    Code: cfg.defaultCode || "",
-    CRUEI: "",
-    Name: "",
-    Name1: "",
-    ...(cfg.hasClaimantNameFields
-      ? { ClaimantName: "", ClaimantName1: "" }
-      : {}),
-  };
-}
-
-const masterOptionsCache = {};
-
-function useMasterOptions(endpoint) {
-  const [options, setOptions] = useState(
-    () => masterOptionsCache[endpoint] || [],
-  );
-
-  useEffect(() => {
-    if (!endpoint) return;
-    if (masterOptionsCache[endpoint]) {
-      setOptions(masterOptionsCache[endpoint]);
-      return;
-    }
-    let cancelled = false;
-    API.get(endpoint)
-      .then((response) => {
-        const list = Array.from(
-          new Set(
-            (response.data || []).map((item) => item?.Name).filter(Boolean),
-          ),
-        );
-        masterOptionsCache[endpoint] = list;
-        if (!cancelled) setOptions(list);
-      })
-      .catch((error) => {
-        console.error(`Error fetching options from ${endpoint}`, error);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [endpoint]);
-
-  return options;
-}
-
-// ---------------------------------------------------------------------------
-// Location suggestions (Release Location / Receipt Location / Loading Port)
-// ---------------------------------------------------------------------------
-
-const locationOptionsCache = {};
-
-function useLocationOptions(endpoint) {
-  const [options, setOptions] = useState(
-    () => locationOptionsCache[endpoint] || [],
-  );
-
-  useEffect(() => {
-    if (!endpoint) return;
-    if (locationOptionsCache[endpoint]) {
-      setOptions(locationOptionsCache[endpoint]);
-      return;
-    }
-    let cancelled = false;
-    API.get(endpoint)
-      .then((response) => {
-        const list = response.data || [];
-        locationOptionsCache[endpoint] = list;
-        if (!cancelled) setOptions(list);
-      })
-      .catch((error) => {
-        console.error(
-          `Error fetching location options from ${endpoint}`,
-          error,
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [endpoint]);
-
-  return options;
-}
-
-function LocationSuggestField({
-  label,
-  endpoint,
-  codeKey,
-  nameKey,
-  extraKey,
-  code,
-  name,
-  onCodeChange,
-  onNameChange,
-  defaultCode,
-}) {
-  const options = useLocationOptions(endpoint);
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [filtered, setFiltered] = useState([]);
-  const [highlighted, setHighlighted] = useState(0);
-  const inputRef = useRef(null);
-
-  useEffect(() => {
-    if (!defaultCode) return;
-    if (!options.length) return;
-    if (code) return;
-    const match = options.find(
-      (item) =>
-        String(item[codeKey] || "").toLowerCase() === defaultCode.toLowerCase(),
-    );
-    if (match) {
-      onCodeChange(match[codeKey] || defaultCode);
-      onNameChange(match[nameKey] || "");
-    }
-  }, [options, defaultCode]);
-
-  const runFilter = (val) => {
-    const search = String(val || "").toLowerCase();
-    const matches = !search
-      ? options
-      : options.filter((item) => {
-          const c = String(item[codeKey] || "").toLowerCase();
-          const n = String(item[nameKey] || "").toLowerCase();
-          return c.startsWith(search) || n.includes(search);
-        });
-    setFiltered(matches.slice(0, 100));
-    setShowDropdown(matches.length > 0);
-  };
-
-  const applyItem = (item) => {
-    onCodeChange(item[codeKey] || "");
-    onNameChange(item[nameKey] || "");
-  };
-
-  const handleCodeChange = (val) => {
-    onCodeChange(val);
-    setHighlighted(0);
-    runFilter(val);
-  };
-
-  const handleSelect = (item) => {
-    applyItem(item);
-    setShowDropdown(false);
-  };
-
-  const handleKeyDown = (e) => {
-    if (!showDropdown || filtered.length === 0) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setHighlighted((prev) => (prev + 1 >= filtered.length ? 0 : prev + 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setHighlighted((prev) => (prev - 1 < 0 ? filtered.length - 1 : prev - 1));
-    } else if (e.key === "Enter" || e.key === "Tab") {
-      e.preventDefault();
-      handleSelect(filtered[highlighted]);
-    }
-  };
-
-  const handleBlur = () => {
-    setTimeout(() => {
-      if (!code) {
-        setShowDropdown(false);
+function makeCachedListHook(endpoint) {
+  const cache = { list: null };
+  return function useCachedList() {
+    const [list, setList] = useState(() => cache.list || []);
+    useEffect(() => {
+      if (cache.list) {
+        setList(cache.list);
         return;
       }
-      const match = options.find(
-        (item) =>
-          String(item[codeKey] || "").toLowerCase() === code.toLowerCase(),
-      );
-      if (match) applyItem(match);
-      setShowDropdown(false);
-    }, 150);
+      let cancelled = false;
+      API.get(endpoint)
+        .then((res) => {
+          cache.list = res.data || [];
+          if (!cancelled) setList(cache.list);
+        })
+        .catch((err) => console.error(`Error fetching ${endpoint}`, err));
+      return () => {
+        cancelled = true;
+      };
+    }, []);
+    return list;
   };
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 6,
-        marginBottom: 6,
-        minWidth: 0,
-      }}
-    >
-      <span
-        style={{
-          width: 62,
-          flexShrink: 0,
-          fontSize: 11,
-          fontWeight: 600,
-          lineHeight: 1.2,
-          color: "#2A3D4F",
-          whiteSpace: "normal",
-          wordBreak: "normal",
-          overflowWrap: "break-word",
-          paddingTop: 4,
-        }}
-      >
-        {label}
-      </span>
-      <FaSearch
-        style={{
-          color: "#1e6e5c",
-          fontSize: 11,
-          flexShrink: 0,
-          marginTop: 5,
-          cursor: "pointer",
-        }}
-        title={`Browse ${label}`}
-        onClick={() => {
-          inputRef.current?.focus();
-          runFilter(code);
-        }}
-      />
-      <div style={{ flex: "0 0 92px", minWidth: 0, position: "relative" }}>
-        <input
-          ref={inputRef}
-          type="text"
-          value={code ?? ""}
-          onChange={(e) => handleCodeChange(e.target.value.toUpperCase())}
-          onKeyDown={handleKeyDown}
-          onFocus={() => runFilter(code)}
-          onBlur={handleBlur}
-          placeholder="CODE"
-          style={{
-            width: "100%",
-            minWidth: 0,
-            padding: "4px 6px",
-            border: "1px solid #C3C1B5",
-            borderRadius: 4,
-            fontFamily: "monospace",
-            fontSize: 11.5,
-            color: "#12202E",
-            background: "#fff",
-            boxSizing: "border-box",
-          }}
-        />
-        {showDropdown && filtered.length > 0 && (
-          <div
-            style={{
-              position: "absolute",
-              top: "100%",
-              left: 0,
-              minWidth: 260,
-              zIndex: 30,
-              background: "#fff",
-              border: `1px solid ${C.inputBorder}`,
-              borderRadius: 4,
-              marginTop: 2,
-              maxHeight: 220,
-              overflowY: "auto",
-              boxShadow: "0 4px 10px rgba(0,0,0,0.12)",
-            }}
-          >
-            {filtered.map((item, index) => (
-              <div
-                key={`${item[codeKey]}-${index}`}
-                onMouseDown={() => handleSelect(item)}
-                onMouseEnter={() => setHighlighted(index)}
-                style={{
-                  padding: "6px 9px",
-                  fontSize: 12,
-                  cursor: "pointer",
-                  background: index === highlighted ? C.bar : "#fff",
-                  color: index === highlighted ? "#fff" : C.navy,
-                }}
-              >
-                {item[codeKey]} - {item[nameKey]}
-                {extraKey && item[extraKey] ? ` (${item[extraKey]})` : ""}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-      <input
-        type="text"
-        value={name ?? ""}
-        onChange={(e) => onNameChange(e.target.value.toUpperCase())}
-        placeholder="NAME"
-        style={{
-          flex: 1,
-          minWidth: 0,
-          padding: "4px 6px",
-          border: "1px solid #C3C1B5",
-          borderRadius: 4,
-          fontFamily: "monospace",
-          fontSize: 11.5,
-          color: "#12202E",
-          background: "#fff",
-          boxSizing: "border-box",
-        }}
-      />
-    </div>
-  );
 }
 
-const partySuggestionsCache = {};
+const useHsCodeSuggestions = makeCachedListHook("/getCommonHsCodeTableInfo/");
+const useTotalOuterPackOptions = makeCachedListHook(
+  "/getTotalOuterPackFromCommonMaster/",
+);
+const useVehicleTypeOptions = makeCachedListHook(
+  "/getVehicalTypeFromCommonMaster/",
+);
+const useEngineCapacityOptions = makeCachedListHook(
+  "/getEngineCapacityFromCommonMaster/",
+);
+const usePreferentialOptions = makeCachedListHook(
+  "/getPreferntialFromCommonMaster/",
+);
+const useMakingLotOptions = makeCachedListHook(
+  "/getMakingLotFromCommonMaster/",
+);
+const useCurrencyOptions = makeCachedListHook("/getCommonCurrencyTableInfo/");
 
-function usePartySuggestions(type) {
-  const cfg = PARTY_TYPES[type];
-  const [state, setState] = useState(
-    () => partySuggestionsCache[type] || { list: [], commonCodes: new Set() },
-  );
-
+const countryCache = { list: null };
+function useCountrySuggestions() {
+  const [list, setList] = useState(() => countryCache.list || []);
   useEffect(() => {
-    if (partySuggestionsCache[type]) {
-      setState(partySuggestionsCache[type]);
+    if (countryCache.list) {
+      setList(countryCache.list);
       return;
     }
     let cancelled = false;
-    const codeKey = cfg.hasClaimantNameFields ? "ClaimantCode" : "Code";
-
-    (async () => {
-      const [commonResult, inpaymentResult] = await Promise.allSettled([
-        API.get(cfg.commonEndpoint),
-        API.get(cfg.inpaymentEndpoint),
-      ]);
-
-      const commonData =
-        commonResult.status === "fulfilled"
-          ? commonResult.value.data || []
-          : [];
-      const inpaymentData =
-        inpaymentResult.status === "fulfilled"
-          ? inpaymentResult.value.data || []
-          : [];
-
-      if (commonResult.status === "rejected") {
-        console.error(
-          `Failed to fetch Common ${cfg.label}`,
-          commonResult.reason,
+    API.get("/getCommonCountryTableInfo/")
+      .then((res) => {
+        const data = (res.data || []).map(
+          (i) => `${i.CountryCode}:${i.Description}`,
         );
-      }
-      if (inpaymentResult.status === "rejected") {
-        console.error(
-          `Failed to fetch Inpayment ${cfg.label}`,
-          inpaymentResult.reason,
-        );
-      }
-
-      const commonCodes = new Set(
-        commonData.map((i) => String(i[codeKey] || "").toLowerCase()),
-      );
-
-      const merged = [...commonData];
-      for (const item of inpaymentData) {
-        const code = String(item[codeKey] || "").toLowerCase();
-        if (!commonCodes.has(code)) {
-          merged.push(item);
-        }
-      }
-
-      const result = { list: merged, commonCodes };
-      partySuggestionsCache[type] = result;
-      if (!cancelled) setState(result);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [type]);
-
-  return state;
-}
-
-const HEADER_FIELD_SPECS = [
-  {
-    key: "MessageType",
-    label: "Message Type",
-    type: "text",
-    aliases: ["messagetype", "message_type"],
-    default: "IPTDEC",
-    disabled: true,
-  },
-  {
-    key: "DeclarationType",
-    label: "Declaration Type",
-    type: "select",
-    aliases: ["declarationtype", "declaration_type"],
-    endpoint: "/getDeclarationTypeFromCommonMasterForInpayment/",
-    default: "GST : GST (Including Duty Exemption)",
-  },
-  {
-    key: "PreviousPermitNo",
-    label: "Previous Permit No",
-    type: "text",
-    aliases: ["previouspermitno", "previous_permit_no"],
-  },
-  {
-    key: "CargoPackType",
-    label: "Cargo Pack Type",
-    type: "select",
-    aliases: ["cargopacktype", "cargo_pack_type"],
-    endpoint: "/getCargoTypeFromCommonMaster/",
-    default: "5 : Other Non-Containerized",
-  },
-  {
-    key: "InwardTransportMode",
-    label: "Inward Transport Mode",
-    type: "select",
-    aliases: ["inwardtransportmode", "inward_transport_mode"],
-    endpoint: "/getInwardTransportModeFromCommonMaster/",
-    default: "4 : Air",
-  },
-  {
-    key: "BgIndicator",
-    label: "BG Indicator",
-    type: "select",
-    aliases: ["bgindicator", "bg_indicator"],
-    endpoint: "/getBgIndicatorFromCommonMaster/",
-    default: "",
-  },
-  {
-    key: "OverrideExgeRate",
-    label: "Override Exge Rate",
-    type: "checkbox",
-    aliases: ["overrideexgerate", "override_exge_rate"],
-  },
-  {
-    key: "SupplyIndicator",
-    label: "Supply Indicator",
-    type: "checkbox",
-    aliases: ["supplyindicator", "supply_indicator"],
-  },
-  {
-    key: "ReferenceDocument",
-    label: "Reference Document",
-    type: "checkbox",
-    aliases: ["referencedocument", "reference_document"],
-  },
-];
-
-const HEADER_FIELD_ALIAS_KEYS = HEADER_FIELD_SPECS.flatMap((s) =>
-  s.aliases.map(normalizeKey),
-);
-
-const HEADER_SELECT_KEYS = new Set(
-  HEADER_FIELD_SPECS.filter((s) => s.type === "select").flatMap((s) => [
-    normalizeKey(s.key),
-    ...s.aliases.map(normalizeKey),
-  ]),
-);
-
-function blankItemRow() {
-  return Object.fromEntries(ITEM_FIELD_SPECS.map((s) => [s.key, ""]));
-}
-
-function truncateHsCodeDisplay(v) {
-  const s = String(v ?? "");
-  return s.length > 8 ? s.slice(0, 8) : s;
-}
-
-function setDeep(obj, path, value) {
-  if (path.length === 0) return value;
-  const [key, ...rest] = path;
-  if (Array.isArray(obj)) {
-    const copy = obj.slice();
-    copy[key] = setDeep(copy[key], rest, value);
-    return copy;
-  }
-  const copy = { ...(obj || {}) };
-  copy[key] = setDeep(copy[key], rest, value);
-  return copy;
-}
-
-let hsCodeCache = null;
-
-function useHsCodeSuggestions() {
-  const [suggestions, setSuggestions] = useState(hsCodeCache || []);
-
-  useEffect(() => {
-    if (hsCodeCache) {
-      setSuggestions(hsCodeCache);
-      return;
-    }
-    let cancelled = false;
-    API.get("/getCommonHsCodeTableInfo/")
-      .then((response) => {
-        hsCodeCache = response.data || [];
-        if (!cancelled) setSuggestions(hsCodeCache);
+        countryCache.list = data;
+        if (!cancelled) setList(data);
       })
-      .catch((error) => {
-        console.error("Error fetching Hs Code suggestions", error);
-      });
+      .catch((err) => console.error("Error fetching country list", err));
     return () => {
       cancelled = true;
     };
   }, []);
-
-  return suggestions;
+  return list;
 }
 
-export function EditableInput({
+function blankCascBox() {
+  return { code: "", hsQuantity: 0, uom: "", casc: [["", "", ""]] };
+}
+
+function blankItem() {
+  return {
+    HSCode: "",
+    Description: "",
+    DGIndicator: false,
+    Unbranded: false,
+    Brand: "",
+    Model: "",
+    Country: "",
+    CountryDescription: "",
+    Hawb: "",
+
+    // duty-type driven visibility, recomputed whenever HS Code changes
+    ShowVehicle: false,
+    ShowPacking: false,
+    ShowAlcohol: false,
+    ShowDutiableQuantity: false,
+    ShowOptionalCharges: false,
+    ShowItemCasc: false,
+    IsControlled: false,
+    DutyTypeId: "",
+    KgmVisible: "",
+    CorrectUom: "",
+    HsLogicAppliedFor: "",
+
+    DutiableQty: "",
+    DutiableUOM: "",
+    TotalDutiableQty: "",
+    TotalDutiableUOM: "",
+    InvoiceQuantity: "",
+    HSQty: "",
+    HSUOM: "",
+    AlcoholPercentage: "",
+
+    InvoiceNo: "",
+    ChkUnitPrice: false,
+    UnitPrice: "",
+    UnitPriceCurrency: "",
+    ExchangeRate: "",
+    SumExchangeRate: "0.00",
+    TotalLineAmount: "",
+    InvoiceCharges: "0.00",
+    CIFFOB: "0.00",
+
+    VehicleType: "",
+    EngineCapacity: "",
+    EngineCapacityUOM: "",
+    OriginalRegDate: "",
+
+    PreferentialCode: "",
+    GSTRate: 9,
+    GSTUOM: "PER",
+    GSTAmount: "",
+    GSTRecalculate: false,
+    ExciseDutyRate: 0,
+    ExciseDutyUOM: "",
+    ExciseDutyAmount: "",
+    CustomsDutyRate: 0,
+    CustomsDutyUOM: "",
+    CustomsDutyAmount: "",
+    OtherTaxRate: "",
+    OtherTaxUOM: "",
+    OtherTaxAmount: "",
+    LastSellingPrice: "",
+
+    PackingChecked: false,
+    OPQty: "0.00",
+    OPUOM: "",
+    IPQty: "0.00",
+    IPUOM: "",
+    InPQty: "0.00",
+    InPUOM: "",
+    ImPQty: "0.00",
+    ImPUOM: "",
+
+    ItemCascChecked: false,
+    ItemCasc: [blankCascBox(), blankCascBox(), blankCascBox()],
+
+    ShowShippingMarks: false,
+    ShippingMarks1: "",
+    ShippingMarks2: "",
+    ShippingMarks3: "",
+    ShippingMarks4: "",
+
+    ShowLotId: false,
+    CurrentLot: "",
+    Making: "",
+    PreviousLot: "",
+
+    OptionalCurrency: "",
+    OptionalRate: "",
+    OptionalAmountInput: "",
+    OptionalCharges: "",
+  };
+}
+
+function parseFlag(v) {
+  if (v === true || v === 1 || v === "1") return true;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    return s === "true" || s === "yes";
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// HS CODE LOGIC (module scope so both ItemFieldsEditor and
+// buildEditDraftFromSavedRow can call it — this MUST NOT be nested inside
+// any component function).
+// ---------------------------------------------------------------------------
+
+function computeHsLogicFields(hsRow) {
+  if (!hsRow) return null;
+  const {
+    HSCode,
+    UOM,
+    DUTYTYPID: RawDutyTypeId,
+    Kgmvisible,
+    DuitableUom,
+    Excisedutyuom,
+    Excisedutyrate,
+    Customsdutyuom,
+    Customsdutyrate,
+    Inpayment,
+  } = hsRow;
+
+  const DUTYTYPID = Number(RawDutyTypeId);
+
+  const patch = {
+    DutyTypeId: DUTYTYPID,
+    KgmVisible: Kgmvisible,
+    IsControlled: String(Inpayment) === "1",
+    HsLogicAppliedFor: HSCode,
+
+    ShowVehicle: false,
+    ShowPacking: false,
+    ShowAlcohol: false,
+    ShowDutiableQuantity: false,
+    ShowOptionalCharges: false,
+
+    HSUOM: UOM || "--Select--",
+    CorrectUom: UOM || "",
+    DutiableUOM: UOM || "",
+    TotalDutiableUOM: DuitableUom || "",
+
+    ExciseDutyRate: 0,
+    ExciseDutyUOM: "",
+    CustomsDutyRate: 0,
+    CustomsDutyUOM: "0.00",
+  };
+
+  if (Number(Inpayment) === 1) {
+    patch.ItemCascChecked = true;
+    patch.ShowItemCasc = true;
+  } else {
+    patch.ItemCascChecked = false;
+    patch.ShowItemCasc = false;
+  }
+
+  const applyDutyDefaults = () => {
+    patch.ExciseDutyUOM = Excisedutyuom == 0 ? "--Select--" : Excisedutyuom;
+    patch.CustomsDutyUOM = Customsdutyuom == 0 ? "--Select--" : Customsdutyuom;
+    patch.ExciseDutyRate = Excisedutyrate;
+    patch.CustomsDutyRate = Customsdutyrate;
+  };
+
+  if (DUTYTYPID === 62 || DUTYTYPID === 63) {
+    if (DUTYTYPID === 62 && UOM === "LTR") {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = true;
+      patch.ShowPacking = true;
+      patch.PackingChecked = true;
+    } else if (
+      (DUTYTYPID === 63 && UOM === "KGM") ||
+      (DUTYTYPID === 62 && UOM !== "LTR")
+    ) {
+      patch.ShowDutiableQuantity = true;
+    } else {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = true;
+      patch.ShowPacking = true;
+      patch.PackingChecked = true;
+    }
+    if (DuitableUom === "A") patch.DutiableUOM = "--Select--";
+    applyDutyDefaults();
+  } else if (DUTYTYPID === 64) {
+    if (UOM !== "LTR") {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = false;
+    } else {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = true;
+      patch.ShowPacking = true;
+      patch.PackingChecked = true;
+    }
+    if (DuitableUom === "A") patch.DutiableUOM = "--Select--";
+    applyDutyDefaults();
+  } else if (DUTYTYPID === 61 || DUTYTYPID === 67) {
+    if (UOM === "LTR") {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = true;
+      patch.ShowPacking = true;
+      patch.PackingChecked = true;
+    } else if (UOM === "KGM") {
+      patch.ShowDutiableQuantity = true;
+      patch.ShowAlcohol = false;
+    } else {
+      patch.ShowDutiableQuantity = false;
+      patch.ShowAlcohol = false;
+    }
+    applyDutyDefaults();
+  } else {
+    patch.DutiableUOM = "--Select--";
+    patch.TotalDutiableUOM = "--Select--";
+  }
+
+  if (HSCode && HSCode.startsWith("87")) {
+    patch.ShowVehicle = true;
+    patch.ShowDutiableQuantity = true;
+    patch.ShowOptionalCharges = true;
+    applyDutyDefaults();
+    patch.DutiableUOM = UOM;
+    patch.TotalDutiableUOM = DuitableUom;
+  }
+
+  return patch;
+}
+
+// ---------------------------------------------------------------------------
+// Small UI atoms
+// ---------------------------------------------------------------------------
+
+function EditableInput({
   value,
   onChange,
   placeholder,
-  compact,
-  onKeyDown,
-  onFocus,
-  onBlur,
+  compact = true,
   disabled,
+  onBlur,
+  onFocus,
+  onKeyDown,
+  type = "text",
+  upper = true,
 }) {
   return (
     <input
-      type="text"
+      type={type}
       value={value ?? ""}
       placeholder={placeholder ?? ""}
-      onChange={(e) => onChange && onChange(e.target.value.toUpperCase())}
-      onKeyDown={onKeyDown}
-      onFocus={onFocus}
+      disabled={disabled}
+      onChange={(e) =>
+        onChange &&
+        onChange(upper ? e.target.value.toUpperCase() : e.target.value)
+      }
       onBlur={onBlur}
-      readOnly={disabled}
+      onFocus={onFocus}
+      onKeyDown={onKeyDown}
       style={{
         border: `1px solid ${C.inputBorder}`,
         borderRadius: 4,
@@ -745,170 +361,137 @@ export function EditableInput({
         width: "100%",
         boxSizing: "border-box",
         fontFamily: "inherit",
-        cursor: disabled ? "default" : "text",
       }}
     />
   );
 }
 
-function HsCodeInput({ value, onChangeText, onSelect }) {
-  const suggestions = useHsCodeSuggestions();
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [filtered, setFiltered] = useState([]);
-  const [highlighted, setHighlighted] = useState(0);
-
-  const runFilter = (val) => {
-    if (!val) {
-      setShowDropdown(false);
-      setFiltered([]);
-      return;
-    }
-    const matches = suggestions.filter(
-      (i) =>
-        i.HSCode?.toLowerCase().includes(val.toLowerCase()) ||
-        i.Description?.toLowerCase().includes(val.toLowerCase()),
-    );
-    const exactMatch = matches.filter(
-      (i) => i.HSCode?.toLowerCase() === val.toLowerCase(),
-    );
-    const finalList =
-      exactMatch.length > 0 ? exactMatch : matches.slice(0, 100);
-    setFiltered(finalList);
-    setShowDropdown(finalList.length > 0);
-  };
-
-  const handleChange = (val) => {
-    onChangeText(val);
-    setHighlighted(0);
-    runFilter(val);
-  };
-
-  const handleSelect = (item) => {
-    onSelect(item);
-    setShowDropdown(false);
-  };
-
-  const handleKeyDown = (e) => {
-    if (!showDropdown || filtered.length === 0) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setHighlighted((prev) => (prev + 1 >= filtered.length ? 0 : prev + 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setHighlighted((prev) => (prev - 1 < 0 ? filtered.length - 1 : prev - 1));
-    } else if (e.key === "Enter" || e.key === "Tab") {
-      e.preventDefault();
-      handleSelect(filtered[highlighted]);
-    }
-  };
-
-  const handleBlur = () => {
-    setTimeout(() => {
-      if (!value) {
-        setShowDropdown(false);
-        return;
-      }
-      const match = suggestions.find(
-        (i) =>
-          String(i.HSCode || "").toLowerCase() === String(value).toLowerCase(),
-      );
-      if (match) {
-        onSelect(match);
-      }
-      setShowDropdown(false);
-    }, 150);
-  };
-
+function EditableSelect({ value, onChange, options, disabled }) {
   return (
-    <div style={{ position: "relative" }}>
-      <EditableInput
-        compact
-        value={value}
-        onChange={handleChange}
-        onKeyDown={handleKeyDown}
-        onFocus={() => runFilter(value)}
-        onBlur={handleBlur}
-      />
-      {showDropdown && filtered.length > 0 && (
-        <div
-          style={{
-            position: "absolute",
-            top: "100%",
-            left: 0,
-            right: 0,
-            zIndex: 20,
-            background: "#fff",
-            border: `1px solid ${C.inputBorder}`,
-            borderRadius: 4,
-            marginTop: 2,
-            maxHeight: 220,
-            overflowY: "auto",
-            boxShadow: "0 4px 10px rgba(0,0,0,0.12)",
-          }}
-        >
-          {filtered.map((item, index) => (
-            <div
-              key={item.HSCode + index}
-              onMouseDown={() => handleSelect(item)}
-              onMouseEnter={() => setHighlighted(index)}
-              style={{
-                padding: "6px 9px",
-                fontSize: 12,
-                cursor: "pointer",
-                background: index === highlighted ? C.bar : "#fff",
-                color: index === highlighted ? "#fff" : C.navy,
-              }}
-            >
-              {item.HSCode} - {item.Description}
-            </div>
-          ))}
-        </div>
+    <select
+      value={value ?? ""}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        border: `1px solid ${C.inputBorder}`,
+        borderRadius: 4,
+        padding: "5px 6px",
+        fontSize: 11.5,
+        color: C.navy,
+        background: disabled ? C.tabIdleBg : C.inputBg,
+        width: "100%",
+        boxSizing: "border-box",
+        fontFamily: "inherit",
+      }}
+    >
+      <option value="">--Select--</option>
+      {value && !options.includes(value) && (
+        <option value={value}>{value}</option>
+      )}
+      {options.map((o) => (
+        <option key={o} value={o}>
+          {o}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function Field({ label, children, error }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span
+        style={{
+          color: C.sub,
+          fontWeight: 700,
+          fontSize: 10.5,
+          letterSpacing: 0.3,
+        }}
+      >
+        {label}
+      </span>
+      {children}
+      {error && (
+        <span style={{ color: C.danger, fontSize: 10, fontWeight: 700 }}>
+          {error}
+        </span>
       )}
     </div>
   );
 }
 
-function PartySearchDropdown({
-  items,
-  highlighted,
-  onSelect,
-  onHover,
-  getLabel,
-}) {
+function Grid({ cols = 2, children }) {
   return (
     <div
       style={{
-        position: "absolute",
-        top: "100%",
-        left: 0,
-        right: 0,
-        zIndex: 20,
-        background: "#fff",
-        border: `1px solid ${C.inputBorder}`,
-        borderRadius: 4,
-        marginTop: 2,
-        maxHeight: 220,
-        overflowY: "auto",
-        boxShadow: "0 4px 10px rgba(0,0,0,0.12)",
+        display: "grid",
+        gridTemplateColumns: `repeat(${cols}, 1fr)`,
+        gap: "10px 12px",
       }}
     >
-      {items.map((item, index) => (
-        <div
-          key={index}
-          onMouseDown={() => onSelect(item)}
-          onMouseEnter={() => onHover(index)}
+      {children}
+    </div>
+  );
+}
+
+function ItemSection({ title, children, extra }) {
+  return (
+    <div
+      style={{
+        border: `1px solid ${C.panelBorder}`,
+        borderRadius: 8,
+        padding: 12,
+        background: "#fafcfd",
+        marginBottom: 12,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 10,
+        }}
+      >
+        <span
           style={{
-            padding: "6px 9px",
-            fontSize: 12,
-            cursor: "pointer",
-            background: index === highlighted ? C.bar : "#fff",
-            color: index === highlighted ? "#fff" : C.navy,
+            color: C.navy,
+            fontWeight: 800,
+            fontSize: 11.5,
+            letterSpacing: 0.4,
+            textTransform: "uppercase",
           }}
         >
-          {getLabel(item)}
-        </div>
-      ))}
+          {title}
+        </span>
+        {extra}
+      </div>
+      {children}
     </div>
+  );
+}
+
+function Checkbox({ checked, onChange, label }) {
+  return (
+    <label
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        fontSize: 11.5,
+        color: C.navy,
+        fontWeight: 600,
+        cursor: "pointer",
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={!!checked}
+        onChange={(e) => onChange(e.target.checked)}
+        style={{ width: 15, height: 15, accentColor: C.bar }}
+      />
+      {label}
+    </label>
   );
 }
 
@@ -958,325 +541,2150 @@ function AddBtn({ onClick, label }) {
   );
 }
 
-const RELATIONSHIP_OPTIONS = ["RELATED", "NOT RELATED"];
-const CURRENCY_OPTIONS = ["USD", "SGD", "INR", "EUR", "GBP", "JPY", "CNY"];
+function SearchPopup({ title, data = [], onClose, onSelect, columns }) {
+  const [search, setSearch] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const rowsPerPage = 5;
 
-// ---------------------------------------------------------------------------
-// Invoice tab — Term Type & Currency (mirrors legacy Invoice.jsx behaviour)
-// ---------------------------------------------------------------------------
+  const filteredData = useMemo(
+    () =>
+      data.filter((item) =>
+        Object.values(item)
+          .join(" ")
+          .toLowerCase()
+          .includes(search.toLowerCase()),
+      ),
+    [search, data],
+  );
 
-const termTypeCache = { list: null };
-
-function useTermTypeOptions() {
-  const [options, setOptions] = useState(() => termTypeCache.list || []);
-
-  useEffect(() => {
-    if (termTypeCache.list) {
-      setOptions(termTypeCache.list);
-      return;
-    }
-    let cancelled = false;
-    API.get("/getTermTypeFromCommonMaster/")
-      .then((response) => {
-        const raw = response.data || [];
-        const seen = new Set();
-        const list = raw.filter((t) => {
-          if (!t?.Name || seen.has(t.Name)) return false;
-          seen.add(t.Name);
-          return true;
-        });
-        termTypeCache.list = list;
-        if (!cancelled) setOptions(list);
-      })
-      .catch((error) => {
-        console.error("Error fetching term types", error);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return options;
-}
-
-const currencyCache = { list: null };
-
-function useCurrencyOptions() {
-  const [options, setOptions] = useState(() => currencyCache.list || []);
+  const totalPages = Math.ceil(filteredData.length / rowsPerPage);
+  const startIndex = (currentPage - 1) * rowsPerPage;
+  const endIndex = startIndex + rowsPerPage;
+  const paginatedData = filteredData.slice(startIndex, endIndex);
 
   useEffect(() => {
-    if (currencyCache.list) {
-      setOptions(currencyCache.list);
-      return;
-    }
-    let cancelled = false;
-    API.get("/getCommonCurrencyTableInfo/")
-      .then((response) => {
-        const list = response.data || [];
-        currencyCache.list = list;
-        if (!cancelled) setOptions(list);
-      })
-      .catch((error) => {
-        console.error("Error fetching currency list", error);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    setCurrentPage(1);
+  }, [search]);
 
-  return options; // [{ Currency: "USD", CurrencyRate: 1.275 }, ...]
-}
-
-const TERM_TYPE_VISIBILITY = {
-  "CFR : Cost and Frieght ( also known as C & F )": {
-    showFreight: false,
-    showInsurance: true,
-    presetInsurance: true,
-  },
-  "CIF : Cost,Insurance and Frieght": {
-    showFreight: false,
-    showInsurance: false,
-  },
-  "CNI : Cost and Insurance (also Known as C & I )": {
-    showFreight: true,
-    showInsurance: false,
-  },
-  "EXW : Exw Works (also known as Ex-Factory)": {
-    showFreight: true,
-    showInsurance: true,
-    presetInsurance: true,
-  },
-  "FAS : Free Alongside Ship": {
-    showFreight: true,
-    showInsurance: true,
-    presetInsurance: true,
-  },
-  "FOB : Free On Board": {
-    showFreight: true,
-    showInsurance: true,
-    presetInsurance: true,
-  },
-};
-
-function getTermTypeVisibility(termType) {
   return (
-    TERM_TYPE_VISIBILITY[termType] || { showFreight: true, showInsurance: true }
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.5)",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        zIndex: 1000,
+      }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        style={{
+          background: "#fff",
+          padding: 20,
+          borderRadius: 6,
+          width: 700,
+          maxHeight: "80%",
+          overflowY: "auto",
+        }}
+      >
+        <h4 style={{ margin: "0 0 10px", color: C.navy }}>{title}</h4>
+        <input
+          type="text"
+          placeholder={`Search ${title}...`}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{
+            width: "100%",
+            padding: "7px 9px",
+            border: `1px solid ${C.inputBorder}`,
+            borderRadius: 4,
+            marginBottom: 10,
+            boxSizing: "border-box",
+            fontSize: 12.5,
+          }}
+        />
+        <table
+          style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}
+        >
+          <thead>
+            <tr>
+              {columns.map((col) => (
+                <th
+                  key={col}
+                  style={{
+                    background: C.tableHead,
+                    color: "#fff",
+                    padding: "6px 8px",
+                    textAlign: "left",
+                    fontSize: 10.5,
+                  }}
+                >
+                  {col}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {paginatedData.map((item, idx) => (
+              <tr
+                key={idx}
+                onClick={() => onSelect(item)}
+                style={{ cursor: "pointer" }}
+                onMouseEnter={(e) =>
+                  (e.currentTarget.style.background = C.rowAlt)
+                }
+                onMouseLeave={(e) =>
+                  (e.currentTarget.style.background = "transparent")
+                }
+              >
+                {columns.map((col) => (
+                  <td
+                    key={col}
+                    style={{
+                      padding: "6px 8px",
+                      borderBottom: `1px solid ${C.panelBorder}`,
+                    }}
+                  >
+                    {item[col]}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {paginatedData.length === 0 && (
+              <tr>
+                <td
+                  colSpan={columns.length}
+                  style={{ textAlign: "center", padding: 14, color: C.sub }}
+                >
+                  No records found
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginTop: 10,
+            fontSize: 12,
+            color: C.sub,
+          }}
+        >
+          <span>
+            Showing {filteredData.length === 0 ? 0 : startIndex + 1} to{" "}
+            {Math.min(endIndex, filteredData.length)} of {filteredData.length}{" "}
+            entries
+          </span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => currentPage > 1 && setCurrentPage(currentPage - 1)}
+              disabled={currentPage === 1}
+              style={{
+                border: `1px solid ${C.inputBorder}`,
+                background: "#fff",
+                borderRadius: 4,
+                padding: "5px 12px",
+                cursor: currentPage === 1 ? "not-allowed" : "pointer",
+              }}
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                currentPage < totalPages && setCurrentPage(currentPage + 1)
+              }
+              disabled={currentPage === totalPages || totalPages === 0}
+              style={{
+                border: `1px solid ${C.inputBorder}`,
+                background: "#fff",
+                borderRadius: 4,
+                padding: "5px 12px",
+                cursor:
+                  currentPage === totalPages || totalPages === 0
+                    ? "not-allowed"
+                    : "pointer",
+              }}
+            >
+              Next
+            </button>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          style={{
+            marginTop: 12,
+            border: `1px solid ${C.inputBorder}`,
+            background: "#fff",
+            borderRadius: 4,
+            padding: "6px 14px",
+            cursor: "pointer",
+          }}
+        >
+          Close
+        </button>
+      </div>
+    </div>
   );
 }
 
-function blankParty() {
-  return { code: "", uen: "", name: "", name1: "" };
+async function fetchProductCodePopupData(hsCode, setPopupData, setLoading) {
+  setLoading(true);
+  try {
+    const url = hsCode
+      ? `/getCascProductCodes/?HSCode=${hsCode}`
+      : `/getCascProductCodes/`;
+    const response = await API.get(url);
+    setPopupData(response.data || []);
+  } catch (err) {
+    console.error("Failed to fetch product code popup data", err);
+    setPopupData([]);
+  } finally {
+    setLoading(false);
+  }
 }
 
-function blankValueRow() {
-  return { charges: "", currency: "", exRate: "", amount: "", amountSgd: "" };
+function ItemNumberBadge({ number, active, onClick, controlled, pending }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={
+        controlled
+          ? "Controlled item"
+          : pending
+            ? "Pending import — click to review"
+            : undefined
+      }
+      style={{
+        width: 34,
+        height: 34,
+        borderRadius: "50%",
+        border: `1.5px solid ${
+          controlled
+            ? C.danger
+            : pending
+              ? "#c98a12"
+              : active
+                ? C.bar
+                : C.panelBorder
+        }`,
+        background: active
+          ? pending
+            ? "#c98a12"
+            : C.bar
+          : controlled
+            ? C.dangerBg
+            : pending
+              ? "#fff6e0"
+              : "#fff",
+        color: active
+          ? "#fff"
+          : controlled
+            ? C.danger
+            : pending
+              ? "#946200"
+              : C.navy,
+        fontWeight: 800,
+        fontSize: 12.5,
+        cursor: "pointer",
+        flexShrink: 0,
+      }}
+    >
+      {number}
+    </button>
+  );
 }
 
-function blankInvoice() {
-  return {
-    supplier: blankParty(),
-    importer: blankParty(),
-    serialNumber: "",
-    invoiceDate: "",
-    invoiceNumber: "",
-    termType: "CIF : Cost,Insurance and Frieght",
-    supplierImporterRelationship: "",
-    preferentialDutyRateIndicator: false,
-    invoiceValue: blankValueRow(),
-    otherValue: blankValueRow(),
-    freightValue: { includeInCif: false, ...blankValueRow() },
-    insuranceValue: { includeInCif: false, ...blankValueRow() },
-    costInsuranceFreight: { amountSgd: "" },
-    gst: { charges: "9", amountSgd: "" },
-  };
-}
+function HsCodeInput({ value, onChangeText, onSelect, onBlurResolve }) {
+  const suggestions = useHsCodeSuggestions();
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [filtered, setFiltered] = useState([]);
+  const [highlighted, setHighlighted] = useState(0);
 
-function InvoiceDateField({ value, onChange }) {
-  const [error, setError] = useState(false);
-
-  const getTodayDate = () => {
-    const today = new Date();
-    const day = String(today.getDate()).padStart(2, "0");
-    const month = String(today.getMonth() + 1).padStart(2, "0");
-    const year = today.getFullYear();
-    return `${day}/${month}/${year}`;
-  };
-
-  const handleBlur = () => {
-    if (!value || value.trim() === "") {
-      setError(false);
+  const runFilter = (val) => {
+    if (!val) {
+      setShowDropdown(false);
+      setFiltered([]);
       return;
     }
-    const raw = value.replace(/\D/g, "");
+    const matches = suggestions.filter(
+      (i) =>
+        i.HSCode?.toLowerCase().startsWith(val.toLowerCase()) ||
+        i.Description?.toLowerCase().includes(val.toLowerCase()),
+    );
+    const exact = matches.filter(
+      (i) => i.HSCode?.toLowerCase() === val.toLowerCase(),
+    );
+    const finalList = exact.length > 0 ? exact : matches.slice(0, 100);
+    setFiltered(finalList);
+    setShowDropdown(finalList.length > 0);
+  };
 
-    if (raw.length === 8) {
-      const dd = raw.slice(0, 2);
-      const mm = raw.slice(2, 4);
-      const yyyy = raw.slice(4, 8);
-      if (
-        parseInt(dd, 10) >= 1 &&
-        parseInt(dd, 10) <= 31 &&
-        parseInt(mm, 10) >= 1 &&
-        parseInt(mm, 10) <= 12
-      ) {
-        onChange(`${dd}/${mm}/${yyyy}`);
-        setError(false);
-      } else {
-        onChange(getTodayDate());
-        setError(true);
-      }
-    } else if (value.length === 10 && value.includes("/")) {
-      setError(false);
-    } else {
-      onChange(getTodayDate());
-      setError(false);
-    }
+  const handleChange = (val) => {
+    onChangeText(val);
+    setHighlighted(0);
+    runFilter(val);
+  };
+
+  const handleSelect = (item) => {
+    onSelect(item);
+    setShowDropdown(false);
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === " " || e.keyCode === 32) {
+    if (!showDropdown || filtered.length === 0) return;
+    if (e.key === "ArrowDown") {
       e.preventDefault();
-      onChange(getTodayDate());
+      setHighlighted((p) => (p + 1 >= filtered.length ? 0 : p + 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlighted((p) => (p - 1 < 0 ? filtered.length - 1 : p - 1));
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      handleSelect(filtered[highlighted]);
     }
   };
 
+  const handleBlur = () => {
+    setTimeout(() => {
+      if (!value) {
+        onBlurResolve(null);
+        setShowDropdown(false);
+        return;
+      }
+      const match = suggestions.find(
+        (i) => String(i.HSCode || "").toLowerCase() === value.toLowerCase(),
+      );
+      onBlurResolve(match || null);
+      setShowDropdown(false);
+    }, 150);
+  };
+
   return (
-    <div>
-      <input
-        type="text"
-        value={value ?? ""}
-        placeholder="DD/MM/YYYY"
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={handleBlur}
+    <div style={{ position: "relative" }}>
+      <EditableInput
+        value={value}
+        onChange={handleChange}
         onKeyDown={handleKeyDown}
-        style={{
-          border: `1px solid ${error ? C.danger : C.inputBorder}`,
-          borderRadius: 4,
-          padding: "6px 8px",
-          fontSize: 12.5,
-          color: C.navy,
-          background: C.inputBg,
-          width: "100%",
-          boxSizing: "border-box",
-          fontFamily: "inherit",
-        }}
+        onFocus={() => runFilter(value)}
+        onBlur={handleBlur}
       />
-      {error && (
-        <span
+      {showDropdown && filtered.length > 0 && (
+        <div
           style={{
-            color: C.danger,
-            fontSize: 10,
-            fontWeight: 700,
-            display: "block",
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            zIndex: 30,
+            background: "#fff",
+            border: `1px solid ${C.inputBorder}`,
+            borderRadius: 4,
             marginTop: 2,
+            maxHeight: 220,
+            overflowY: "auto",
+            boxShadow: "0 4px 10px rgba(0,0,0,0.12)",
           }}
         >
-          Invalid date — reset to today
-        </span>
+          {filtered.map((item, index) => (
+            <div
+              key={item.HSCode + index}
+              onMouseDown={() => handleSelect(item)}
+              onMouseEnter={() => setHighlighted(index)}
+              style={{
+                padding: "6px 9px",
+                fontSize: 12,
+                cursor: "pointer",
+                background: index === highlighted ? C.bar : "#fff",
+                color: index === highlighted ? "#fff" : C.navy,
+              }}
+            >
+              {item.HSCode} - {item.Description}
+              {String(item.Inpayment) === "1" && (
+                <span style={{ color: C.danger, fontWeight: 800 }}>
+                  {" "}
+                  (Controlled)
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
 }
-function InvoiceField({ label, children }) {
+
+function CountryInput({ code, description, onCodeChange, onResolve }) {
+  const suggestions = useCountrySuggestions();
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [filtered, setFiltered] = useState([]);
+  const [highlighted, setHighlighted] = useState(0);
+
+  const runFilter = (val) => {
+    if (!val) {
+      setShowDropdown(false);
+      setFiltered([]);
+      return;
+    }
+    const lower = val.toLowerCase();
+    const matches = suggestions.filter((item) => {
+      const [c] = item.split(":");
+      return c.toLowerCase().startsWith(lower);
+    });
+    setFiltered(matches.slice(0, 50));
+    setShowDropdown(matches.length > 0);
+  };
+
+  const handleChange = (val) => {
+    onCodeChange(val);
+    setHighlighted(0);
+    runFilter(val);
+  };
+
+  const handleSelect = (item) => {
+    const [Code, Description] = item.split(":");
+    onResolve(Code, Description);
+    setShowDropdown(false);
+  };
+
+  const handleKeyDown = (e) => {
+    if (!showDropdown || filtered.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlighted((p) => (p + 1 >= filtered.length ? 0 : p + 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlighted((p) => (p - 1 < 0 ? filtered.length - 1 : p - 1));
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      handleSelect(filtered[highlighted]);
+    }
+  };
+
+  const handleBlur = () => {
+    setTimeout(() => {
+      if (!code) {
+        onResolve("", "");
+        setShowDropdown(false);
+        return;
+      }
+      const match = suggestions
+        .map((i) => i.split(":"))
+        .find(([Code]) => Code.toLowerCase() === code.toLowerCase());
+      if (match) onResolve(match[0], match[1]);
+      else onResolve(code, "");
+      setShowDropdown(false);
+    }, 150);
+  };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <span
-        style={{
-          color: C.sub,
-          fontWeight: 700,
-          fontSize: 10.5,
-          letterSpacing: 0.3,
-        }}
-      >
-        {label}
-      </span>
-      {children}
+    <div style={{ display: "grid", gridTemplateColumns: "80px 1fr", gap: 6 }}>
+      <div style={{ position: "relative" }}>
+        <EditableInput
+          value={code}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onFocus={() => runFilter(code)}
+          onBlur={handleBlur}
+          placeholder="CODE"
+        />
+        {showDropdown && filtered.length > 0 && (
+          <div
+            style={{
+              position: "absolute",
+              top: "100%",
+              left: 0,
+              minWidth: 240,
+              zIndex: 30,
+              background: "#fff",
+              border: `1px solid ${C.inputBorder}`,
+              borderRadius: 4,
+              marginTop: 2,
+              maxHeight: 220,
+              overflowY: "auto",
+              boxShadow: "0 4px 10px rgba(0,0,0,0.12)",
+            }}
+          >
+            {filtered.map((item, index) => {
+              const [cc, desc] = item.split(":");
+              return (
+                <div
+                  key={cc + index}
+                  onMouseDown={() => handleSelect(item)}
+                  onMouseEnter={() => setHighlighted(index)}
+                  style={{
+                    padding: "6px 9px",
+                    fontSize: 12,
+                    cursor: "pointer",
+                    background: index === highlighted ? C.bar : "#fff",
+                    color: index === highlighted ? "#fff" : C.navy,
+                  }}
+                >
+                  {cc} - {desc}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <EditableInput value={description} disabled placeholder="NAME" />
     </div>
   );
 }
 
-function InvoiceSelect({ value, onChange, options }) {
-  return (
-    <select
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value)}
-      style={{
-        border: `1px solid ${C.inputBorder}`,
-        borderRadius: 4,
-        padding: "6px 8px",
-        fontSize: 12.5,
-        color: C.navy,
-        background: C.inputBg,
-        width: "100%",
-        boxSizing: "border-box",
-        fontFamily: "inherit",
-      }}
-    >
-      <option value="">Select</option>
-      {value && !options.includes(value) && (
-        <option value={value}>{value}</option>
-      )}
-      {options.map((o) => (
-        <option key={o} value={o}>
-          {o}
-        </option>
-      ))}
-    </select>
-  );
+function parseHawbList(hawbStr) {
+  return String(hawbStr || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
-function HeaderSelectField({ spec, value, onChange }) {
-  const fetchedOptions = useMasterOptions(spec.endpoint);
-  const options =
-    fetchedOptions.length > 0
-      ? fetchedOptions
-      : spec.default
-        ? [spec.default]
-        : [];
-
-  return (
-    <select
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value)}
-      style={{
-        border: `1px solid ${C.inputBorder}`,
-        borderRadius: 4,
-        padding: "6px 8px",
-        fontSize: 12.5,
-        color: C.navy,
-        background: C.inputBg,
-        width: "100%",
-        boxSizing: "border-box",
-        fontFamily: "inherit",
-      }}
-    >
-      <option value="">--Select--</option>
-      {value && !options.includes(value) && (
-        <option value={value}>{value}</option>
-      )}
-      {options.map((o) => (
-        <option key={o} value={o}>
-          {o}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function InvoiceValueRow({
-  label,
-  row,
+function ItemFieldsEditor({
+  item,
   path,
   onEdit,
-  hasCheckbox,
-  rowBg,
-  currencyOptions,
-  onCurrencyChange,
-  chargesDisabled,
-  amountDisabled,
+  invoiceNumbers,
+  declarationType,
+  totalGrossWeight,
+  permitId,
+  user,
+  itemNumber,
+  editingItemNo,
+  onSaved,
+  cargoHawbList,
 }) {
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState({});
+
+  const [cascPopupOpen, setCascPopupOpen] = useState(false);
+  const [cascPopupData, setCascPopupData] = useState([]);
+  const [cascPopupLoading, setCascPopupLoading] = useState(false);
+  const [activeCascIndex, setActiveCascIndex] = useState(null);
+
+  const totalOuterPack = useTotalOuterPackOptions();
+  const vehicleTypeOptions = useVehicleTypeOptions();
+  const engineCapacityOptions = useEngineCapacityOptions();
+  const preferentialOptions = usePreferentialOptions();
+  const makingLotOptions = useMakingLotOptions();
+  const currencyOptions = useCurrencyOptions();
+
+  const set = (field, value) => onEdit([...path, field], value);
+  const effectiveHawb = editingItemNo
+    ? item.Hawb || ""
+    : cargoHawbList.length > 1
+      ? item.Hawb || cargoHawbList[0] || ""
+      : cargoHawbList[0] || item.Hawb || "";
+
+  // ---------------- HS CODE LOGIC ----------------
+  // computeHsLogicFields itself now lives at module scope (see top of file)
+  // so buildEditDraftFromSavedRow can also use it. This component just
+  // calls it.
+
+  const applyHsLogic = (hsRow) => {
+    if (!hsRow) return;
+    // Skip re-applying defaults if this HS Code's logic was already applied —
+    // prevents wiping out manually-picked UOM values on repeat blur/select.
+    if (item.HsLogicAppliedFor === hsRow.HSCode) return;
+
+    const patch = computeHsLogicFields(hsRow);
+    if (!patch) return;
+    Object.entries(patch).forEach(([k, v]) => set(k, v));
+  };
+
+  const handleHsCodeSelect = (hsItem) => {
+    set("HSCode", hsItem.HSCode);
+    if (!item.Description?.trim()) set("Description", hsItem.Description);
+    applyHsLogic(hsItem);
+  };
+
+  const handleHsCodeBlur = (resolvedRow) => {
+    if (!resolvedRow) {
+      if (!item.HSCode) {
+        set("DutiableUOM", "--Select--");
+        set("TotalDutiableUOM", "--Select--");
+        set("HSUOM", "--Select--");
+        set("ExciseDutyUOM", "--Select--");
+        set("CustomsDutyUOM", "--Select--");
+        set("HsLogicAppliedFor", ""); // <-- NEW
+      }
+      return;
+    }
+    set("HSCode", resolvedRow.HSCode);
+    applyHsLogic(resolvedRow);
+  };
+  // ---------------- UOM validation (derived, no extra state) ----------------
+
+  const hsUomError =
+    item.HSUOM === ""
+      ? "PLEASE CHECK UOM"
+      : item.HSUOM && item.CorrectUom && item.HSUOM !== item.CorrectUom
+        ? "INVALID UOM FOR THIS HS CODE"
+        : "";
+  // ---------------- Invoice Quantity -> HS Quantity conversion ----------------
+
+  const itemInvoiceQuantityFunction = () => {
+    const itemqty = parseFloat(item.InvoiceQuantity);
+    if (!itemqty) return;
+    const hsopt = item.HSUOM;
+    let total;
+    if (hsopt === "TEN" || hsopt === "TPR") total = itemqty / 10;
+    else if (hsopt === "CEN") total = itemqty / 100;
+    else if (hsopt === "MIL" || hsopt === "TNE") total = itemqty / 1000;
+    else if (hsopt === "MTK") total = itemqty * 3.213;
+    else if (hsopt === "LTR" || hsopt === "KGM") total = itemqty * 1;
+    else total = itemqty;
+
+    if (
+      (hsopt === "KGM" || hsopt === "LTR" || hsopt === "TNE") &&
+      totalGrossWeight &&
+      itemqty > Number(totalGrossWeight)
+    ) {
+      alert(
+        "The Total Gross Weight is Less Than The Sum Of The Item Weight Please Check!!!",
+      );
+    }
+
+    if (item.HSQty === "0.00" || item.HSQty === "" || itemqty !== 0) {
+      set("HSQty", total.toFixed(4));
+    }
+  };
+
+  // ---------------- Dutiable quantity / packing calculation (duticalc) ----------------
+
+  const recomputeDutiable = () => {
+    const op = parseFloat(item.OPQty) || 0;
+    const ip = parseFloat(item.IPQty) || 0;
+    const inp = parseFloat(item.InPQty) || 0;
+    const imp = parseFloat(item.ImPQty) || 0;
+    const totduti = parseFloat(item.TotalDutiableQty) || 0;
+    if (!totduti) return;
+
+    let pckqty = 1;
+    if (op > 0) pckqty = op;
+    if (ip > 0) pckqty = pckqty * ip;
+    if (inp > 0) pckqty = pckqty * inp;
+    if (imp > 0) pckqty = pckqty * imp;
+
+    const HsVal = item.HSCode || "";
+    const typeidval = item.DutyTypeId;
+    const kgmvis = item.KgmVisible;
+    const T1 = parseFloat(item.ExciseDutyRate) || 0;
+    const T2 = parseFloat(item.CIFFOB) || 0;
+    const gstperval = (parseFloat(item.GSTRate) || 0) / 100;
+    const TDQUOM = item.TotalDutiableUOM;
+
+    let totalQty = 0;
+    let excise = 0;
+    let gst = 0;
+
+    const writeExciseAndGst = (qtyForExcise) => {
+      if (!HsVal.startsWith("87")) {
+        excise = qtyForExcise * T1;
+        set("ExciseDutyAmount", excise.toFixed(2));
+      }
+      gst = T2 * gstperval + excise * gstperval;
+      set("GSTAmount", gst.toFixed(2));
+    };
+
+    if (TDQUOM === "LTR") {
+      totalQty = pckqty * totduti;
+      set("TotalDutiableQty", totalQty.toFixed(2));
+      set("HSQty", totalQty.toFixed(2));
+    } else if (TDQUOM === "KGM" && kgmvis === "MULTIPLE") {
+      totalQty = pckqty * totduti;
+      set("TotalDutiableQty", totalQty.toFixed(2));
+      writeExciseAndGst(totalQty);
+    } else if (TDQUOM === "KGM" && kgmvis === "DIVIDE") {
+      totalQty = (pckqty * totduti) / 1000;
+      set("TotalDutiableQty", totalQty.toFixed(2));
+      writeExciseAndGst(totalQty);
+    } else if (TDQUOM === "STK") {
+      totalQty = pckqty;
+      set("TotalDutiableQty", totalQty.toFixed(2));
+      set("HSQty", ((pckqty * totduti) / 1000).toFixed(2));
+      writeExciseAndGst(pckqty);
+    } else if (
+      (TDQUOM === "KGM" && (typeidval === 62 || typeidval === 61)) ||
+      (TDQUOM === "TNE" && typeidval === 62) ||
+      TDQUOM === "DAL"
+    ) {
+      totalQty = pckqty * totduti;
+      set("TotalDutiableQty", totalQty.toFixed(2));
+      writeExciseAndGst(totalQty);
+    } else if (TDQUOM === "NMB" && HsVal.startsWith("87")) {
+      excise = (T2 * T1) / 100;
+      set("ExciseDutyAmount", excise.toFixed(2));
+      gst = T2 * gstperval + excise * gstperval;
+      set("GSTAmount", gst.toFixed(2));
+    }
+  };
+
+  // ---------------- Alcohol / excise / customs / GST calc (mirrors the ----
+  // ---------------- combined useEffect in legacy Item.jsx) -----------------
+
+  useEffect(() => {
+    const T1 = parseFloat(item.TotalDutiableQty) || 0;
+    const T2 = parseFloat(item.AlcoholPercentage) || 0;
+    const T3 = parseFloat(item.ExciseDutyRate) || 0;
+    const T4 = parseFloat(item.CustomsDutyRate) || 0;
+    const T5 = parseFloat(item.CIFFOB) || 0;
+    const gstperval = (parseFloat(item.GSTRate) || 0) / 100;
+
+    let exciseValue = parseFloat(item.ExciseDutyAmount) || 0;
+    let T7 = parseFloat(item.CustomsDutyAmount) || 0;
+
+    if (T1 > 0 && T2 > 0 && T3 > 0) {
+      exciseValue = T1 * T2 * (T3 / 100);
+      T7 = T1 * T2 * (T4 / 100);
+      if (fmt(exciseValue) !== fmt(item.ExciseDutyAmount)) {
+        set("ExciseDutyAmount", exciseValue.toFixed(2));
+      }
+      if (fmt(T7) !== fmt(item.CustomsDutyAmount)) {
+        set("CustomsDutyAmount", T7.toFixed(2));
+      }
+    }
+
+    let T6;
+    if (declarationType !== "GST : GST (Including Duty Exemption)") {
+      T6 = (exciseValue + T5 + T7) * gstperval;
+    } else {
+      T6 = T5 * gstperval;
+    }
+
+    if (!item.GSTRecalculate && fmt(T6) !== fmt(item.GSTAmount)) {
+      set("GSTAmount", T6.toFixed(2));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    item.TotalDutiableQty,
+    item.AlcoholPercentage,
+    item.ExciseDutyRate,
+    item.CustomsDutyRate,
+    item.CIFFOB,
+    item.GSTRate,
+    declarationType,
+  ]);
+
+  const gstWarning =
+    Number(item.GSTAmount) >= 10000
+      ? "Total GST Amount greater than 10000"
+      : "";
+
+  // ---------------- Invoice line amount / CIF-FOB calc ----------------
+
+  const applyInvoiceChange = (invoiceNo) => {
+    set("InvoiceNo", invoiceNo);
+    const selected = invoiceNumbers.find((inv) => inv.InvoiceNo === invoiceNo);
+    if (selected) {
+      set("UnitPriceCurrency", selected.TICurrency);
+      set("ExchangeRate", selected.TIExRate);
+    } else {
+      set("UnitPriceCurrency", "");
+      set("ExchangeRate", "");
+    }
+  };
+
+  const invoiceTotalLineAmountFunction = () => {
+    const itotalAmount = Number(item.TotalLineAmount) || 0;
+    const icurrinput = Number(item.ExchangeRate) || 0;
+    let totalAmd = 0;
+    let totInvoiceAmd = 0;
+    invoiceNumbers.forEach((i) => {
+      if (item.InvoiceNo === i.InvoiceNo) {
+        totalAmd =
+          Number(i.OTCSAmount) + Number(i.FCSAmount) + Number(i.ICSAmount);
+        totInvoiceAmd = Number(i.TISAmount);
+      }
+    });
+    if (totInvoiceAmd === 0) return;
+    const invoiceAmd = totalAmd / totInvoiceAmd;
+    const totalLineAmd = icurrinput * itotalAmount;
+    const invoiceCharge = invoiceAmd * totalLineAmd;
+
+    set("InvoiceCharges", invoiceCharge.toFixed(2));
+    const total2 = totalLineAmd + invoiceCharge;
+    set("CIFFOB", total2.toFixed(2));
+
+    if ((item.HSCode || "").startsWith("87")) {
+      const vehicleExcise = (total2 * Number(item.ExciseDutyRate)) / 100;
+      set("ExciseDutyAmount", vehicleExcise.toFixed(2));
+    }
+  };
+
+  // ---------------- Sum exchange rate (unit price section) ----------------
+
+  useEffect(() => {
+    if (!item.ChkUnitPrice) {
+      if (item.SumExchangeRate !== "0.00") set("SumExchangeRate", "0.00");
+      return;
+    }
+    const rate = parseFloat(item.ExchangeRate) || 0;
+    const price = parseFloat(item.UnitPrice) || 0;
+    const sum = (rate * price).toFixed(2);
+    if (item.SumExchangeRate !== sum) set("SumExchangeRate", sum);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.ExchangeRate, item.UnitPrice, item.ChkUnitPrice]);
+
+  // ---------------- Optional charges (vehicle) ----------------
+
+  const optionalChargesFunction = (val) => {
+    set("OptionalAmountInput", val);
+    const rate = parseFloat(item.OptionalRate) || 0;
+    set("OptionalCharges", (Number(val || 0) * rate).toFixed(2));
+  };
+
+  const handleOptionalCurrencyChange = (currencyName) => {
+    const match = currencyOptions.find((c) => c.Currency === currencyName);
+    set("OptionalCurrency", currencyName);
+    set("OptionalRate", match ? match.CurrencyRate : "");
+  };
+
+  // ---------------- Last selling price ----------------
+
+  const lastSellingPriceFunction = () => {
+    const exciseAmt = parseFloat(item.ExciseDutyAmount) || 0;
+    const gstRate = parseFloat(item.GSTRate) || 0;
+    const lastPrice = parseFloat(item.LastSellingPrice);
+    if (lastPrice > 0) {
+      const gstOnExcise = (exciseAmt * gstRate) / 100;
+      const totalGst = (lastPrice * gstRate) / 100 + gstOnExcise;
+      set("GSTAmount", totalGst.toFixed(2));
+    }
+  };
+
+  // ---------------- Preferential code ----------------
+
+  const itemPreferentialCodeOut = (value) => {
+    set("PreferentialCode", value);
+    if (value === "PRF : if goods are imported under preferential duty rates") {
+      set("CustomsDutyRate", "0.00");
+      set("CustomsDutyUOM", "");
+      set("CustomsDutyAmount", "0.00");
+    }
+  };
+
+  // ---------------- Unbranded / DG indicator ----------------
+
+  const handleUnbrandedChange = (checked) => {
+    set("Unbranded", checked);
+    set("Brand", checked ? "UNBRANDED" : "");
+  };
+
+  const togglePacking = (checked) => {
+    set("PackingChecked", checked);
+    set("ShowPacking", checked);
+    if (!checked) {
+      set("OPQty", "0.00");
+      set("OPUOM", "");
+      set("IPQty", "0.00");
+      set("IPUOM", "");
+      set("InPQty", "0.00");
+      set("InPUOM", "");
+      set("ImPQty", "0.00");
+      set("ImPUOM", "");
+    }
+  };
+
+  const toggleItemCasc = (checked) => {
+    set("ItemCascChecked", checked);
+    set("ShowItemCasc", checked);
+    if (!checked)
+      set("ItemCasc", [blankCascBox(), blankCascBox(), blankCascBox()]);
+  };
+
+  // ---------------- Item CASC handlers ----------------
+
+  const copyHsQty = (cIndex) => {
+    const updated = item.ItemCasc.slice();
+    updated[cIndex] = {
+      ...updated[cIndex],
+      hsQuantity: item.HSQty,
+      uom: item.HSUOM,
+    };
+    set("ItemCasc", updated);
+  };
+
+  const handleCascFieldChange = (cIndex, field, value) => {
+    const updated = item.ItemCasc.slice();
+    updated[cIndex] = { ...updated[cIndex], [field]: value };
+    set("ItemCasc", updated);
+  };
+
+  const handleCascTableChange = (cIndex, rowIndex, colIndex, value) => {
+    const updated = item.ItemCasc.map((box) => ({
+      ...box,
+      casc: box.casc.map((row) => row.slice()),
+    }));
+    if (!updated[cIndex].casc[rowIndex]) {
+      updated[cIndex].casc[rowIndex] = ["", "", ""];
+    }
+    updated[cIndex].casc[rowIndex][colIndex] = value;
+    set("ItemCasc", updated);
+  };
+
+  const addCascRow = (cIndex) => {
+    const updated = item.ItemCasc.map((box) => ({
+      ...box,
+      casc: box.casc.map((row) => row.slice()),
+    }));
+    updated[cIndex].casc.push(["", "", ""]);
+    set("ItemCasc", updated);
+  };
+
+  const deleteCascRow = (cIndex, rowIndex) => {
+    const updated = item.ItemCasc.map((box) => ({
+      ...box,
+      casc: box.casc.map((row) => row.slice()),
+    }));
+    updated[cIndex].casc.splice(rowIndex, 1);
+    set("ItemCasc", updated);
+  };
+
+  // ---------------- CASC product-code search popup ----------------
+
+  const handleCascSearchClick = (cIndex) => {
+    setActiveCascIndex(cIndex);
+    setCascPopupOpen(true);
+    fetchProductCodePopupData(
+      item.HSCode,
+      setCascPopupData,
+      setCascPopupLoading,
+    );
+  };
+
+  const handleCascProductSelect = (selectedItem) => {
+    if (activeCascIndex === null) return;
+    const updated = item.ItemCasc.slice();
+    updated[activeCascIndex] = {
+      ...updated[activeCascIndex],
+      code: selectedItem.CASCCode,
+      uom: selectedItem.UOM,
+    };
+    set("ItemCasc", updated);
+    setCascPopupOpen(false);
+    setActiveCascIndex(null);
+  };
+
+  // ---------------- Lot id / shipping marks toggles ----------------
+
+  const toggleLotId = (checked) => {
+    set("ShowLotId", checked);
+    if (!checked) {
+      set("CurrentLot", "");
+      set("Making", "");
+      set("PreviousLot", "");
+    }
+  };
+
+  const toggleShippingMarks = (checked) => {
+    set("ShowShippingMarks", checked);
+    if (!checked) {
+      set("ShippingMarks1", "");
+      set("ShippingMarks2", "");
+      set("ShippingMarks3", "");
+      set("ShippingMarks4", "");
+    }
+  };
+
+  const validateItem = () => {
+    const errors = {};
+    if (!item.HSCode?.trim()) errors.HSCode = "FILL HSCODE";
+    if (!item.Description?.trim())
+      errors.Description = "FILL HSCODE DESCRIPTION";
+    if (!item.Country?.trim()) errors.Country = "FILL COO";
+    if (!item.Brand?.trim()) errors.Brand = "FILL BRAND";
+    if (item.HSQty === "" || Number(item.HSQty) === 0)
+      errors.HSQty = "FILL HS QUANTITY";
+    if (!item.HSUOM) errors.HSUOM = "PLEASE CHECK UOM";
+    if (!item.InvoiceNo) errors.InvoiceNo = "CHOOSE INVOICE";
+    if (item.TotalLineAmount === "" || Number(item.TotalLineAmount) === 0) {
+      errors.TotalLineAmount = "FILL TOTAL LINE AMOUNT";
+    }
+    if (item.ItemCascChecked && !item.ItemCasc?.[0]?.code?.trim()) {
+      errors.ItemCasc = "Please Check The Item Casc";
+    }
+    setFieldErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const buildCascPayload = (itemNo) => {
+    const username = user?.username || "";
+    const messageType = "IPTDEC";
+    return (item.ItemCasc || []).flatMap((box, boxIndex) => {
+      if (!box.code) return [];
+      const hasRowData = (box.casc || []).some((row) =>
+        row.some((cell) => cell !== ""),
+      );
+      if (!hasRowData) {
+        return [
+          {
+            ItemNo: itemNo,
+            ProductCode: box.code,
+            Quantity: box.hsQuantity || 0,
+            ProductUOM: box.uom || "",
+            RowNo: 1,
+            CascCode1: "",
+            CascCode2: "",
+            CascCode3: "",
+            PermitId: permitId,
+            MessageType: messageType,
+            TouchUser: username,
+            TouchTime: new Date().toISOString(),
+            EndUserDes: "",
+            CASCId: `Casc${boxIndex + 1}`,
+          },
+        ];
+      }
+      return box.casc
+        .filter((row) => row.some((cell) => cell !== ""))
+        .map((row, rowIndex) => ({
+          ItemNo: itemNo,
+          ProductCode: box.code,
+          Quantity: box.hsQuantity || 0,
+          ProductUOM: box.uom || "",
+          RowNo: rowIndex + 1,
+          CascCode1: row[0] || "",
+          CascCode2: row[1] || "",
+          CascCode3: row[2] || "",
+          PermitId: permitId,
+          MessageType: messageType,
+          TouchUser: username,
+          TouchTime: new Date().toISOString(),
+          EndUserDes: "",
+          CASCId: `Casc${boxIndex + 1}`,
+        }));
+    });
+  };
+
+  // Never save the literal placeholder text — blank instead.
+  function cleanUom(val) {
+    if (!val || val === "--Select--") return "";
+    return val;
+  }
+
+  // Never save NULL/blank for a quantity — default to a real zero string,
+  // but preserve any actual value already present.
+  function cleanQty(val, decimals = 2) {
+    if (val === "" || val === null || val === undefined) {
+      return (0).toFixed(decimals);
+    }
+    const num = parseFloat(val);
+    return isNaN(num) ? (0).toFixed(decimals) : num.toFixed(decimals);
+  }
+
+  const buildItemPayload = (itemNo) => ({
+    CascDatas: JSON.stringify(buildCascPayload(itemNo)),
+    PermitId: permitId,
+    ItemNo: itemNo,
+    MessageType: "IPTDEC",
+    HSCode: item.HSCode || "",
+    Description: (item.Description || "").toUpperCase(),
+    DGIndicator: item.DGIndicator ? "True" : "False",
+    Contry: item.Country || "",
+    EndUserDescription: "",
+    Brand: item.Brand || "",
+    Model: item.Model || "",
+    InHAWBOBL: effectiveHawb || "",
+    OutHAWBOBL: "",
+
+    DutiableQty: cleanQty(item.DutiableQty, 2),
+    TotalDutiableQty: cleanQty(item.TotalDutiableQty, 4),
+    DutiableUOM: cleanUom(item.DutiableUOM),
+    TotalDutiableUOM: cleanUom(item.TotalDutiableUOM),
+    InvoiceQuantity: cleanQty(item.InvoiceQuantity, 4),
+    HSQty: cleanQty(item.HSQty, 4),
+    HSUOM: cleanUom(item.HSUOM),
+
+    AlcoholPer: item.AlcoholPercentage || 0,
+    InvoiceNo: item.InvoiceNo || "",
+    ChkUnitPrice: item.ChkUnitPrice ? "True" : "False",
+    UnitPrice: item.UnitPrice || 0,
+    UnitPriceCurrency: item.UnitPriceCurrency || "",
+    ExchangeRate: item.ExchangeRate || 0,
+    SumExchangeRate: item.SumExchangeRate || 0,
+    TotalLineAmount: item.TotalLineAmount || 0,
+    InvoiceCharges: item.InvoiceCharges || 0,
+    CIFFOB: Number(item.CIFFOB || 0).toFixed(2),
+
+    OPQty: cleanQty(item.OPQty, 2),
+    OPUOM: cleanUom(item.OPUOM),
+    IPQty: cleanQty(item.IPQty, 2),
+    IPUOM: cleanUom(item.IPUOM),
+    InPqty: cleanQty(item.InPQty, 2),
+    InPUOM: cleanUom(item.InPUOM),
+    ImPQty: cleanQty(item.ImPQty, 2),
+    ImPUOM: cleanUom(item.ImPUOM),
+    PreferentialCode: item.PreferentialCode || "",
+    GSTRate: item.GSTRate,
+    GSTUOM: item.GSTUOM || "",
+    GSTAmount: item.GSTAmount || 0,
+    ExciseDutyRate: item.ExciseDutyRate || 0,
+    ExciseDutyUOM: item.ExciseDutyUOM || "",
+    ExciseDutyAmount: item.ExciseDutyAmount || 0,
+    CustomsDutyRate: item.CustomsDutyRate || 0,
+    CustomsDutyUOM: item.CustomsDutyUOM || "",
+    CustomsDutyAmount: item.CustomsDutyAmount || 0,
+    OtherTaxRate: item.OtherTaxRate || 0,
+    OtherTaxUOM: cleanUom(item.OtherTaxUOM),
+    OtherTaxAmount: item.OtherTaxAmount || 0,
+    LSPValue: item.LastSellingPrice || 0,
+    CurrentLot: item.CurrentLot || "",
+    PreviousLot: item.PreviousLot || "",
+    Making: cleanUom(item.Making),
+    ShippingMarks1: item.ShippingMarks1 || "",
+    ShippingMarks2: item.ShippingMarks2 || "",
+    ShippingMarks3: item.ShippingMarks3 || "",
+    ShippingMarks4: item.ShippingMarks4 || "",
+    TouchUser: (user?.username || "").toUpperCase(),
+    TouchTime: new Date().toISOString(),
+    VehicleType: cleanUom(item.VehicleType),
+    OptionalChrgeUOM: cleanUom(item.OptionalCurrency),
+    EngineCapcity: item.EngineCapacity || "",
+    Optioncahrge: item.OptionalCharges || 0,
+    OptionalSumtotal: item.OptionalAmountInput || 0,
+    OptionalSumExchage: item.OptionalRate || 0,
+    EngineCapUOM: cleanUom(item.EngineCapacityUOM),
+    orignaldatereg: item.OriginalRegDate || "",
+  });
+
+  const handleSaveItem = async () => {
+    setSaveError("");
+    if (!permitId) {
+      setSaveError(
+        'Click "New" first to generate a Permit ID before saving an item.',
+      );
+      return;
+    }
+    if (!validateItem()) return;
+
+    const itemNo = editingItemNo || itemNumber;
+    const payload = buildItemPayload(itemNo);
+
+    setIsSaving(true);
+    try {
+      const res = await API.post("/postItemWithCasc/", payload);
+      if (res.data?.Warning) alert(res.data.Warning);
+      onSaved({ ...item, Hawb: effectiveHawb, ItemNo: itemNo });
+    } catch (error) {
+      console.error("Save failed", error);
+      setSaveError(
+        error.response?.data?.error ||
+          error.response?.data?.Result ||
+          "Failed to save item, check console for details",
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const packUomOptions = totalOuterPack.map((t) => t.Name).filter(Boolean);
+
   return (
-    <tr style={{ background: rowBg }}>
+    <div>
+      {/* HEADER ROW */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 12,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              color: C.navy,
+              fontWeight: 800,
+              fontSize: 12.5,
+              letterSpacing: 0.3,
+            }}
+          >
+            {editingItemNo
+              ? `Editing Item ${editingItemNo}`
+              : `New Item ${itemNumber}`}
+          </span>
+          {item.IsControlled && (
+            <span
+              style={{
+                background: C.dangerBg,
+                color: C.danger,
+                fontWeight: 800,
+                fontSize: 10.5,
+                padding: "3px 8px",
+                borderRadius: 12,
+              }}
+            >
+              CONTROLLED ITEM
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={handleSaveItem}
+          disabled={isSaving}
+          style={{
+            border: "none",
+            background: isSaving ? "#90caf9" : C.bar,
+            color: "#fff",
+            fontWeight: 700,
+            fontSize: 11.5,
+            padding: "6px 14px",
+            borderRadius: 6,
+            cursor: isSaving ? "not-allowed" : "pointer",
+          }}
+        >
+          {isSaving ? "Saving…" : editingItemNo ? "Update Item" : "Save Item"}
+        </button>
+      </div>
+      {saveError && (
+        <div
+          style={{
+            color: C.danger,
+            fontWeight: 700,
+            fontSize: 11.5,
+            marginBottom: 10,
+          }}
+        >
+          {saveError}
+        </div>
+      )}
+
+      {/* BASIC DETAILS */}
+      <ItemSection title="Basic Details">
+        <Grid cols={2}>
+          <Field label="HAWB / HBL">
+            {editingItemNo ? (
+              <EditableInput
+                value={item.Hawb}
+                onChange={(v) => set("Hawb", v)}
+              />
+            ) : cargoHawbList.length > 1 ? (
+              <EditableSelect
+                value={effectiveHawb}
+                onChange={(v) => set("Hawb", v)}
+                options={cargoHawbList}
+              />
+            ) : (
+              <EditableInput
+                value={effectiveHawb}
+                disabled
+                onChange={() => {}}
+              />
+            )}
+          </Field>
+          <Field label="HS Code">
+            <HsCodeInput
+              value={item.HSCode}
+              onChangeText={(v) => set("HSCode", v)}
+              onSelect={handleHsCodeSelect}
+              onBlurResolve={handleHsCodeBlur}
+            />
+          </Field>
+        </Grid>
+        <div style={{ marginTop: 10 }}>
+          <Field label="Description" error={fieldErrors.Description}>
+            <textarea
+              value={item.Description ?? ""}
+              onChange={(e) => set("Description", e.target.value)}
+              style={{
+                border: `1px solid ${C.inputBorder}`,
+                borderRadius: 4,
+                padding: "7px 9px",
+                fontSize: 12,
+                color: C.navy,
+                width: "100%",
+                minHeight: 60,
+                resize: "vertical",
+                boxSizing: "border-box",
+                fontFamily: "inherit",
+              }}
+            />
+          </Field>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <Grid cols={2}>
+            <Field label="Country of Origin (COO)" error={fieldErrors.Country}>
+              <CountryInput
+                code={item.Country}
+                description={item.CountryDescription}
+                onCodeChange={(v) => set("Country", v)}
+                onResolve={(code, desc) => {
+                  set("Country", code);
+                  set("CountryDescription", desc);
+                }}
+              />
+            </Field>
+            <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
+              <Checkbox
+                checked={item.DGIndicator}
+                onChange={(v) => set("DGIndicator", v)}
+                label="DG Indicator"
+              />
+              <Checkbox
+                checked={item.Unbranded}
+                onChange={handleUnbrandedChange}
+                label="Unbranded"
+              />
+            </div>
+          </Grid>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <Grid cols={2}>
+            <Field label="Brand" error={fieldErrors.Brand}>
+              <EditableInput
+                value={item.Brand}
+                onChange={(v) => set("Brand", v)}
+              />
+            </Field>
+            <Field label="Model">
+              <EditableInput
+                value={item.Model}
+                onChange={(v) => set("Model", v)}
+              />
+            </Field>
+          </Grid>
+        </div>
+      </ItemSection>
+
+      {/* VEHICLE */}
+      {item.ShowVehicle && (
+        <ItemSection title="Vehicle Details">
+          <Grid cols={3}>
+            <Field label="Vehicle Type">
+              <EditableSelect
+                value={item.VehicleType}
+                onChange={(v) => set("VehicleType", v)}
+                options={vehicleTypeOptions.map((v) => v.Name)}
+              />
+            </Field>
+            <Field label="Engine Capacity">
+              <EditableInput
+                value={item.EngineCapacity}
+                onChange={(v) => set("EngineCapacity", v)}
+                placeholder="0.00"
+              />
+            </Field>
+            <Field label="Engine Capacity UOM">
+              <EditableSelect
+                value={item.EngineCapacityUOM}
+                onChange={(v) => set("EngineCapacityUOM", v)}
+                options={engineCapacityOptions.map((v) => v.Name)}
+              />
+            </Field>
+          </Grid>
+          <div style={{ marginTop: 10 }}>
+            <Field label="Original Registration Date">
+              <EditableInput
+                value={item.OriginalRegDate}
+                onChange={(v) => set("OriginalRegDate", v)}
+                placeholder="DD/MM/YYYY"
+                upper={false}
+              />
+            </Field>
+          </div>
+        </ItemSection>
+      )}
+
+      {/* QUANTITIES */}
+      <ItemSection title="Quantities">
+        <Grid cols={2}>
+          {item.ShowDutiableQuantity && (
+            <Field label="Dutiable Quantity">
+              <div style={{ display: "flex", gap: 6 }}>
+                <EditableInput
+                  value={item.DutiableQty}
+                  onChange={(v) => set("DutiableQty", v)}
+                  placeholder="0.00"
+                />
+                <EditableSelect
+                  value={item.DutiableUOM}
+                  onChange={(v) => set("DutiableUOM", v)}
+                  options={packUomOptions}
+                />
+              </div>
+            </Field>
+          )}
+          <Field label="Total Dutiable Quantity">
+            <div style={{ display: "flex", gap: 6 }}>
+              <EditableInput
+                value={item.TotalDutiableQty}
+                onChange={(v) => set("TotalDutiableQty", v)}
+                onBlur={recomputeDutiable}
+                placeholder="0.00"
+              />
+              <EditableSelect
+                value={item.TotalDutiableUOM}
+                onChange={(v) => set("TotalDutiableUOM", v)}
+                options={packUomOptions}
+              />
+            </div>
+          </Field>
+          <Field label="Invoice Quantity">
+            <EditableInput
+              value={item.InvoiceQuantity}
+              onChange={(v) => set("InvoiceQuantity", v)}
+              onBlur={itemInvoiceQuantityFunction}
+              placeholder="0.00"
+            />
+          </Field>
+          <Field label="HS Quantity" error={hsUomError || fieldErrors.HSQty}>
+            <div style={{ display: "flex", gap: 6 }}>
+              <EditableInput
+                value={item.HSQty}
+                onChange={(v) => set("HSQty", v)}
+                placeholder="0.00"
+              />
+              <EditableSelect
+                value={item.HSUOM}
+                onChange={(v) => set("HSUOM", v)}
+                options={packUomOptions}
+              />
+            </div>
+          </Field>
+          {item.ShowAlcohol && (
+            <Field label="Alcohol Percentage (%)">
+              <EditableInput
+                value={item.AlcoholPercentage}
+                onChange={(v) => set("AlcoholPercentage", v)}
+                placeholder="0.00"
+              />
+            </Field>
+          )}
+        </Grid>
+      </ItemSection>
+
+      {/* INVOICE & PRICING */}
+      <ItemSection title="Invoice & Pricing">
+        <Grid cols={2}>
+          <Field label="Invoice Number" error={fieldErrors.InvoiceNo}>
+            <EditableSelect
+              value={item.InvoiceNo}
+              onChange={applyInvoiceChange}
+              options={invoiceNumbers.map((i) => i.InvoiceNo).filter(Boolean)}
+            />
+          </Field>
+          <Field label="Currency / Ex.Rate">
+            <div style={{ display: "flex", gap: 6 }}>
+              <EditableInput value={item.UnitPriceCurrency} disabled />
+              <EditableInput value={item.ExchangeRate} disabled />
+            </div>
+          </Field>
+        </Grid>
+
+        <div style={{ marginTop: 10 }}>
+          <Checkbox
+            checked={item.ChkUnitPrice}
+            onChange={(v) => set("ChkUnitPrice", v)}
+            label="Unit Price (Auto)"
+          />
+        </div>
+        {item.ChkUnitPrice && (
+          <div style={{ marginTop: 10 }}>
+            <Grid cols={2}>
+              <Field label="Unit Price">
+                <EditableInput
+                  value={item.UnitPrice}
+                  onChange={(v) => set("UnitPrice", v)}
+                  placeholder="0.00"
+                />
+              </Field>
+              <Field label="Sum Exchange Rate">
+                <EditableInput value={item.SumExchangeRate} disabled />
+              </Field>
+            </Grid>
+          </div>
+        )}
+
+        {item.ShowOptionalCharges && (
+          <div style={{ marginTop: 10 }}>
+            <Grid cols={3}>
+              <Field label="Optional Charge Currency">
+                <EditableSelect
+                  value={item.OptionalCurrency}
+                  onChange={handleOptionalCurrencyChange}
+                  options={currencyOptions.map((c) => c.Currency)}
+                />
+              </Field>
+              <Field label="Optional Amount">
+                <EditableInput
+                  value={item.OptionalAmountInput}
+                  onChange={optionalChargesFunction}
+                  placeholder="0.00"
+                />
+              </Field>
+              <Field label="Optional Charges ($)">
+                <EditableInput value={item.OptionalCharges} disabled />
+              </Field>
+            </Grid>
+          </div>
+        )}
+
+        <div style={{ marginTop: 10 }}>
+          <Grid cols={2}>
+            <Field
+              label="Total Line Amount"
+              error={fieldErrors.TotalLineAmount}
+            >
+              <EditableInput
+                value={item.TotalLineAmount}
+                onChange={(v) => set("TotalLineAmount", v)}
+                onBlur={invoiceTotalLineAmountFunction}
+                placeholder="0.00"
+              />
+            </Field>
+            <Field label="Total Invoice Charge (SGD)">
+              <EditableInput value={item.InvoiceCharges} disabled />
+            </Field>
+            <Field label="CIF / FOB (SGD)">
+              <EditableInput value={item.CIFFOB} disabled />
+            </Field>
+            <Field label="Last Selling Price (SGD)">
+              <EditableInput
+                value={item.LastSellingPrice}
+                onChange={(v) => set("LastSellingPrice", v)}
+                onBlur={lastSellingPriceFunction}
+                placeholder="0.00"
+              />
+            </Field>
+          </Grid>
+        </div>
+      </ItemSection>
+
+      {/* TAX TABLE */}
+      <ItemSection title="Duty & Tax">
+        <div style={{ overflowX: "auto" }}>
+          <table
+            style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}
+          >
+            <thead>
+              <tr>
+                {["Item", "Rate", "UOM", "Amount ($)"].map((h) => (
+                  <th
+                    key={h}
+                    style={{
+                      background: C.tableHead,
+                      color: "#fff",
+                      padding: "7px 9px",
+                      textAlign: "left",
+                      fontSize: 10.5,
+                    }}
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr style={{ background: C.rowAlt }}>
+                <td style={{ padding: "7px 9px" }}>
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={item.GSTRecalculate}
+                      onChange={(e) => set("GSTRecalculate", e.target.checked)}
+                      style={{ accentColor: C.bar }}
+                    />
+                    GST (recalc)
+                  </label>
+                </td>
+                <td style={{ padding: 6 }}>
+                  <EditableInput
+                    value={item.GSTRate}
+                    onChange={(v) => set("GSTRate", v)}
+                  />
+                </td>
+                <td style={{ padding: 6 }}>
+                  <EditableInput value={item.GSTUOM} disabled />
+                </td>
+                <td style={{ padding: 6 }}>
+                  <EditableInput
+                    value={item.GSTAmount}
+                    onChange={(v) => set("GSTAmount", v)}
+                    disabled={!item.GSTRecalculate}
+                    placeholder="0.00"
+                  />
+                </td>
+              </tr>
+              <tr>
+                <td style={{ padding: "7px 9px" }}>Excise Duty</td>
+                <td style={{ padding: 6 }}>
+                  <EditableInput value={item.ExciseDutyRate} disabled />
+                </td>
+                <td style={{ padding: 6 }}>
+                  <EditableInput value={item.ExciseDutyUOM} disabled />
+                </td>
+                <td style={{ padding: 6 }}>
+                  <EditableInput value={item.ExciseDutyAmount} disabled />
+                </td>
+              </tr>
+              <tr style={{ background: C.rowAlt }}>
+                <td style={{ padding: "7px 9px" }}>Customs Duty</td>
+                <td style={{ padding: 6 }}>
+                  <EditableInput value={item.CustomsDutyRate} disabled />
+                </td>
+                <td style={{ padding: 6 }}>
+                  <EditableInput value={item.CustomsDutyUOM} disabled />
+                </td>
+                <td style={{ padding: 6 }}>
+                  <EditableInput value={item.CustomsDutyAmount} disabled />
+                </td>
+              </tr>
+              <tr>
+                <td style={{ padding: "7px 9px" }}>Other Tax</td>
+                <td style={{ padding: 6 }}>
+                  <EditableInput
+                    value={item.OtherTaxRate}
+                    onChange={(v) => set("OtherTaxRate", v)}
+                  />
+                </td>
+                <td style={{ padding: 6 }}>
+                  <EditableSelect
+                    value={item.OtherTaxUOM}
+                    onChange={(v) => set("OtherTaxUOM", v)}
+                    options={packUomOptions}
+                  />
+                </td>
+                <td style={{ padding: 6 }}>
+                  <EditableInput
+                    value={item.OtherTaxAmount}
+                    onChange={(v) => set("OtherTaxAmount", v)}
+                  />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        {gstWarning && (
+          <div
+            style={{
+              color: C.danger,
+              fontSize: 11,
+              fontWeight: 700,
+              marginTop: 6,
+            }}
+          >
+            {gstWarning}
+          </div>
+        )}
+      </ItemSection>
+
+      {/* ADDITIONAL FEATURES */}
+      <ItemSection title="Additional Features">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 18 }}>
+          <Checkbox
+            checked={item.PackingChecked}
+            onChange={togglePacking}
+            label="Packing Info"
+          />
+          <Checkbox
+            checked={item.ItemCascChecked}
+            onChange={toggleItemCasc}
+            label="Item CASC"
+          />
+          <Checkbox
+            checked={item.ShowShippingMarks}
+            onChange={toggleShippingMarks}
+            label="Shipping Marks"
+          />
+          <Checkbox
+            checked={item.ShowLotId}
+            onChange={toggleLotId}
+            label="Lot ID"
+          />
+        </div>
+        {fieldErrors.ItemCasc && (
+          <div
+            style={{
+              color: C.danger,
+              fontSize: 10,
+              fontWeight: 700,
+              marginTop: 6,
+            }}
+          >
+            {fieldErrors.ItemCasc}
+          </div>
+        )}
+        <div style={{ marginTop: 10, maxWidth: 320 }}>
+          <Field label="Preferential Code">
+            <EditableSelect
+              value={item.PreferentialCode}
+              onChange={itemPreferentialCodeOut}
+              options={preferentialOptions.map((p) => p.Name)}
+            />
+          </Field>
+        </div>
+      </ItemSection>
+
+      {/* PACKING */}
+      {item.ShowPacking && (
+        <ItemSection title="Packing Details">
+          <Grid cols={2}>
+            {[
+              ["Outer Pack Quantity", "OPQty", "OPUOM"],
+              ["In Pack Quantity", "IPQty", "IPUOM"],
+              ["Inner Pack Quantity", "InPQty", "InPUOM"],
+              ["Inmost Pack Quantity", "ImPQty", "ImPUOM"],
+            ].map(([label, qtyKey, uomKey]) => (
+              <Field label={label} key={qtyKey}>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <EditableInput
+                    value={item[qtyKey]}
+                    onChange={(v) => set(qtyKey, v)}
+                    onBlur={recomputeDutiable}
+                    placeholder="0.00"
+                  />
+                  <EditableSelect
+                    value={item[uomKey]}
+                    onChange={(v) => set(uomKey, v)}
+                    options={packUomOptions}
+                  />
+                </div>
+              </Field>
+            ))}
+          </Grid>
+        </ItemSection>
+      )}
+
+      {/* ITEM CASC */}
+      {item.ShowItemCasc && (
+        <ItemSection title="Item CASC">
+          {item.ItemCasc.map((box, cIndex) => (
+            <div
+              key={cIndex}
+              style={{
+                border: `1px solid ${C.panelBorder}`,
+                borderRadius: 6,
+                padding: 10,
+                marginBottom: 10,
+                background: cIndex % 2 ? C.rowAlt : "#fff",
+              }}
+            >
+              <Grid cols={4}>
+                <Field label={`Product Code ${cIndex + 1}`}>
+                  <div
+                    style={{ display: "flex", gap: 6, alignItems: "center" }}
+                  >
+                    <FaSearch
+                      style={{ cursor: "pointer", flexShrink: 0, color: C.bar }}
+                      onClick={() => handleCascSearchClick(cIndex)}
+                      title="Search product code"
+                    />
+                    <EditableInput
+                      value={box.code}
+                      onChange={(v) => handleCascFieldChange(cIndex, "code", v)}
+                    />
+                  </div>
+                </Field>
+                <Field label="HS Quantity">
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <EditableInput
+                      value={box.hsQuantity}
+                      onChange={(v) =>
+                        handleCascFieldChange(cIndex, "hsQuantity", v)
+                      }
+                    />
+                    <button
+                      type="button"
+                      onClick={() => copyHsQty(cIndex)}
+                      title="Copy HS Quantity"
+                      style={{
+                        border: `1px solid ${C.bar}`,
+                        background: "#fff",
+                        color: C.bar,
+                        borderRadius: 4,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        padding: "0 8px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      COPY
+                    </button>
+                  </div>
+                </Field>
+                <Field label="UOM">
+                  <EditableSelect
+                    value={box.uom}
+                    onChange={(v) => handleCascFieldChange(cIndex, "uom", v)}
+                    options={packUomOptions}
+                  />
+                </Field>
+                <div style={{ display: "flex", alignItems: "flex-end" }}>
+                  <AddBtn
+                    onClick={() => addCascRow(cIndex)}
+                    label="+ CASC Row"
+                  />
+                </div>
+              </Grid>
+
+              <div style={{ overflowX: "auto", marginTop: 8 }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: 12,
+                  }}
+                >
+                  <thead>
+                    <tr>
+                      {["CASC Code 1", "CASC Code 2", "CASC Code 3", ""].map(
+                        (h) => (
+                          <th
+                            key={h}
+                            style={{
+                              background: C.tableHead,
+                              color: "#fff",
+                              padding: "6px 8px",
+                              fontSize: 10,
+                              textAlign: "left",
+                            }}
+                          >
+                            {h}
+                          </th>
+                        ),
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(box.casc.length ? box.casc : [["", "", ""]]).map(
+                      (row, rowIndex) => (
+                        <tr key={rowIndex}>
+                          {row.map((cell, colIndex) => (
+                            <td key={colIndex} style={{ padding: 5 }}>
+                              <EditableInput
+                                value={cell}
+                                onChange={(v) =>
+                                  handleCascTableChange(
+                                    cIndex,
+                                    rowIndex,
+                                    colIndex,
+                                    v,
+                                  )
+                                }
+                              />
+                            </td>
+                          ))}
+                          <td style={{ padding: 5, textAlign: "center" }}>
+                            <FaTrash
+                              style={{ cursor: "pointer", color: C.danger }}
+                              onClick={() => deleteCascRow(cIndex, rowIndex)}
+                            />
+                          </td>
+                        </tr>
+                      ),
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </ItemSection>
+      )}
+
+      {/* LOT ID */}
+      {item.ShowLotId && (
+        <ItemSection title="Lot ID">
+          <Grid cols={3}>
+            <Field label="Current Lot">
+              <EditableInput
+                value={item.CurrentLot}
+                onChange={(v) => set("CurrentLot", v)}
+              />
+            </Field>
+            <Field label="Making">
+              <EditableSelect
+                value={item.Making}
+                onChange={(v) => set("Making", v)}
+                options={makingLotOptions.map((m) => m.Name)}
+              />
+            </Field>
+            <Field label="Previous Lot">
+              <EditableInput
+                value={item.PreviousLot}
+                onChange={(v) => set("PreviousLot", v)}
+              />
+            </Field>
+          </Grid>
+        </ItemSection>
+      )}
+
+      {/* SHIPPING MARKS */}
+      {item.ShowShippingMarks && (
+        <ItemSection title="Shipping Marks">
+          <Grid cols={4}>
+            {[
+              "ShippingMarks1",
+              "ShippingMarks2",
+              "ShippingMarks3",
+              "ShippingMarks4",
+            ].map((key, i) => (
+              <Field label={`Marks ${i + 1}`} key={key}>
+                <textarea
+                  value={item[key] ?? ""}
+                  onChange={(e) => set(key, e.target.value.toUpperCase())}
+                  style={{
+                    border: `1px solid ${C.inputBorder}`,
+                    borderRadius: 4,
+                    padding: "6px 8px",
+                    fontSize: 11.5,
+                    width: "100%",
+                    minHeight: 50,
+                    resize: "vertical",
+                    boxSizing: "border-box",
+                    fontFamily: "inherit",
+                  }}
+                />
+              </Field>
+            ))}
+          </Grid>
+        </ItemSection>
+      )}
+      {cascPopupOpen && (
+        <SearchPopup
+          title="PRODUCT CODE"
+          data={cascPopupData}
+          columns={["CASCCode", "Description", "UOM"]}
+          onClose={() => {
+            setCascPopupOpen(false);
+            setActiveCascIndex(null);
+          }}
+          onSelect={handleCascProductSelect}
+        />
+      )}
+    </div>
+  );
+}
+
+function buildEditDraftFromSavedRow(raw, hsCodeSuggestions) {
+  const hsRow = hsCodeSuggestions.find(
+    (h) =>
+      String(h.HSCode || "").toLowerCase() ===
+      String(raw.HSCode || "").toLowerCase(),
+  );
+  const hsPatch = computeHsLogicFields(hsRow) || {};
+
+  const draft = {
+    ...blankItem(),
+    ...hsPatch,
+
+    ItemNo: raw.ItemNo,
+    HSCode: raw.HSCode || "",
+    Description: raw.Description || "",
+    DGIndicator: parseFlag(raw.DGIndicator),
+    Country: raw.Contry || "",
+    Brand: raw.Brand || "",
+    Unbranded: String(raw.Brand || "").toUpperCase() === "UNBRANDED",
+    Model: raw.Model || "",
+    Hawb: raw.InHAWBOBL || "",
+
+    DutiableQty: fmt(raw.DutiableQty, 2),
+    DutiableUOM: raw.DutiableUOM || "--Select--",
+    TotalDutiableQty: fmt(raw.TotalDutiableQty, 4),
+    TotalDutiableUOM: raw.TotalDutiableUOM || "--Select--",
+    InvoiceQuantity: fmt(raw.InvoiceQuantity, 4),
+
+    VehicleType: raw.VehicleType || "--Select--",
+    EngineCapacity: raw.EngineCapcity || "",
+    EngineCapacityUOM: raw.EngineCapUOM || "--Select--",
+    OriginalRegDate: raw.orignaldatereg || "",
+
+    HSQty: fmt(raw.HSQty, 4),
+    HSUOM: raw.HSUOM || "--Select--",
+    AlcoholPercentage: fmt(raw.AlcoholPer, 2),
+
+    InvoiceNo: raw.InvoiceNo || "",
+    ChkUnitPrice: parseFlag(raw.ChkUnitPrice),
+    UnitPrice: fmt(raw.UnitPrice, 2),
+    UnitPriceCurrency: raw.UnitPriceCurrency || "",
+    ExchangeRate: fmt(raw.ExchangeRate, 6),
+    SumExchangeRate: fmt(raw.SumExchangeRate, 2),
+    TotalLineAmount: fmt(raw.TotalLineAmount, 2),
+    InvoiceCharges: fmt(raw.InvoiceCharges, 2),
+    CIFFOB: fmt(raw.CIFFOB, 2),
+
+    OPQty: fmt(raw.OPQty, 2),
+    OPUOM: raw.OPUOM || "--Select--",
+    IPQty: fmt(raw.IPqty ?? raw.IPQty, 2),
+    IPUOM: raw.IPUOM || "--Select--",
+    InPQty: fmt(raw.InPqty, 2),
+    InPUOM: raw.InPUOM || "--Select--",
+    ImPQty: fmt(raw.ImPQty, 2),
+    ImPUOM: raw.ImPUOM || "--Select--",
+
+    PreferentialCode: raw.PreferentialCode || "",
+    GSTRate: fmt(raw.GSTRate, 4),
+    GSTUOM: raw.GSTUOM || "PER",
+    GSTAmount: fmt(raw.GSTAmount, 2),
+    ExciseDutyRate: fmt(raw.ExciseDutyRate, 2),
+    ExciseDutyUOM: raw.ExciseDutyUOM || "--Select--",
+    ExciseDutyAmount: fmt(raw.ExciseDutyAmount, 2),
+    CustomsDutyRate: fmt(raw.CustomsDutyRate, 2),
+    CustomsDutyUOM: raw.CustomsDutyUOM || "--Select--",
+    CustomsDutyAmount: fmt(raw.CustomsDutyAmount, 2),
+    OtherTaxRate: fmt(raw.OtherTaxRate, 4),
+    OtherTaxUOM: raw.OtherTaxUOM || "--Select--",
+    OtherTaxAmount: fmt(raw.OtherTaxAmount, 2),
+    LastSellingPrice: fmt(raw.LSPValue, 2),
+
+    CurrentLot: raw.CurrentLot || "",
+    Making: raw.Making || "--Select--",
+    PreviousLot: raw.PreviousLot || "",
+
+    ShippingMarks1: raw.ShippingMarks1 || "",
+    ShippingMarks2: raw.ShippingMarks2 || "",
+    ShippingMarks3: raw.ShippingMarks3 || "",
+    ShippingMarks4: raw.ShippingMarks4 || "",
+
+    OptionalCurrency: raw.OptionalChrgeUOM || "--Select--",
+    OptionalRate: raw.OptionalSumExchage || "",
+    OptionalAmountInput: raw.OptionalSumtotal || "",
+    OptionalCharges: raw.Optioncahrge || "",
+  };
+
+  const hasPacking =
+    Number(raw.OPQty) > 0 ||
+    String(raw.OPUOM || "").trim() !== "" ||
+    Number(raw.IPqty ?? raw.IPQty) > 0 ||
+    String(raw.IPUOM || "").trim() !== "" ||
+    Number(raw.InPqty) > 0 ||
+    String(raw.InPUOM || "").trim() !== "" ||
+    Number(raw.ImPQty) > 0 ||
+    String(raw.ImPUOM || "").trim() !== "";
+  draft.PackingChecked = hasPacking;
+  draft.ShowPacking = hasPacking;
+
+  draft.ShowLotId = !!(
+    raw.CurrentLot?.trim() ||
+    raw.Making?.trim() ||
+    raw.PreviousLot?.trim()
+  );
+
+  draft.ShowShippingMarks = !!(
+    raw.ShippingMarks1?.trim() ||
+    raw.ShippingMarks2?.trim() ||
+    raw.ShippingMarks3?.trim() ||
+    raw.ShippingMarks4?.trim()
+  );
+
+  return draft;
+}
+
+function normalizeIncomingItem(raw) {
+  if (!raw || typeof raw !== "object") return blankItem();
+  const base = { ...blankItem(), ...raw };
+
+  const findValue = (keys) => {
+    for (const k of Object.keys(raw)) {
+      const norm = k.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (keys.includes(norm) && raw[k] !== "" && raw[k] != null) {
+        return raw[k];
+      }
+    }
+    return undefined;
+  };
+
+  if (!base.HSCode) {
+    const v = findValue(["code", "hscode", "hs_code", "commoditycode"]);
+    if (v !== undefined) base.HSCode = v;
+  }
+  if (!base.Description) {
+    const v = findValue(["description", "desc"]);
+    if (v !== undefined) base.Description = v;
+  }
+  if (!base.TotalLineAmount) {
+    const v = findValue(["totalvalue", "total_value", "totallineamount"]);
+    if (v !== undefined) base.TotalLineAmount = v;
+  }
+  if (!base.InvoiceQuantity) {
+    const v = findValue(["quantity", "qty"]);
+    if (v !== undefined) base.InvoiceQuantity = v;
+  }
+  if (!base.Country) {
+    const v = findValue(["country", "countryoforigin", "coo"]);
+    if (v !== undefined) base.Country = v;
+  }
+
+  return base;
+}
+
+function ItemsTableRow({ item, onEdit, onDelete, deleting }) {
+  return (
+    <tr style={{ background: "#fff" }}>
+      <td
+        style={{
+          padding: 6,
+          textAlign: "center",
+          borderBottom: `1px solid ${C.panelBorder}`,
+        }}
+      >
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={deleting}
+          title="Delete item"
+          style={{
+            border: "none",
+            background: "#fdeceb",
+            color: C.danger,
+            width: 26,
+            height: 26,
+            borderRadius: 6,
+            cursor: deleting ? "not-allowed" : "pointer",
+            fontSize: 14,
+            fontWeight: 800,
+          }}
+        >
+          x
+        </button>
+      </td>
+      <td
+        style={{
+          padding: 6,
+          textAlign: "center",
+          borderBottom: `1px solid ${C.panelBorder}`,
+        }}
+      >
+        <button
+          type="button"
+          onClick={onEdit}
+          title="Edit item"
+          style={{
+            border: "none",
+            background: "transparent",
+            color: C.bar,
+            cursor: "pointer",
+            fontWeight: 800,
+            fontSize: 14,
+          }}
+        >
+          ✎
+        </button>
+      </td>
+      <td
+        style={{
+          padding: "7px 9px",
+          borderBottom: `1px solid ${C.panelBorder}`,
+          fontSize: 12,
+          color: item.IsControlled ? C.danger : C.navy,
+          fontWeight: item.IsControlled ? 800 : 400,
+        }}
+      >
+        {item.ItemNo}
+      </td>
       <td
         style={{
           padding: "7px 9px",
@@ -1285,2621 +2693,120 @@ function InvoiceValueRow({
           color: C.navy,
         }}
       >
-        {hasCheckbox && (
-          <input
-            type="checkbox"
-            checked={!!row.includeInCif}
-            onChange={(e) =>
-              onEdit([...path, "includeInCif"], e.target.checked)
-            }
-            style={{ marginRight: 6, verticalAlign: -2, accentColor: C.bar }}
-          />
-        )}
-        {label}
+        {item.HSCode || "—"}
       </td>
-      <td style={{ padding: 6, borderBottom: `1px solid ${C.panelBorder}` }}>
-        <EditableInput
-          compact
-          value={row.charges}
-          onChange={(v) => onEdit([...path, "charges"], v)}
-          placeholder="0.00"
-          disabled={chargesDisabled}
-        />
+      <td
+        style={{
+          padding: "7px 9px",
+          borderBottom: `1px solid ${C.panelBorder}`,
+          fontSize: 12,
+          color: C.navy,
+        }}
+      >
+        {item.Description || "—"}
       </td>
-      <td style={{ padding: 6, borderBottom: `1px solid ${C.panelBorder}` }}>
-        <InvoiceSelect
-          value={row.currency}
-          onChange={(v) =>
-            onCurrencyChange
-              ? onCurrencyChange(v)
-              : onEdit([...path, "currency"], v)
-          }
-          options={
-            currencyOptions && currencyOptions.length
-              ? currencyOptions
-              : CURRENCY_OPTIONS
-          }
-        />
+      <td
+        style={{
+          padding: "7px 9px",
+          borderBottom: `1px solid ${C.panelBorder}`,
+          fontSize: 12,
+          color: C.navy,
+        }}
+      >
+        {item.Country || "—"}
       </td>
-      <td style={{ padding: 6, borderBottom: `1px solid ${C.panelBorder}` }}>
-        <EditableInput compact value={row.exRate} placeholder="0.00" disabled />
+      <td
+        style={{
+          padding: "7px 9px",
+          borderBottom: `1px solid ${C.panelBorder}`,
+          fontSize: 12,
+          color: C.navy,
+        }}
+      >
+        {item.Hawb || "—"}
       </td>
-      <td style={{ padding: 6, borderBottom: `1px solid ${C.panelBorder}` }}>
-        <EditableInput
-          compact
-          value={row.amount}
-          onChange={(v) => onEdit([...path, "amount"], v)}
-          placeholder="0.00"
-          disabled={amountDisabled}
-        />
+      <td
+        style={{
+          padding: "7px 9px",
+          borderBottom: `1px solid ${C.panelBorder}`,
+          fontSize: 12,
+          color: C.navy,
+        }}
+      >
+        {item.UnitPriceCurrency || "—"}
       </td>
-      <td style={{ padding: 6, borderBottom: `1px solid ${C.panelBorder}` }}>
-        <EditableInput
-          compact
-          value={row.amountSgd}
-          placeholder="0.00"
-          disabled
-        />
+      <td
+        style={{
+          padding: "7px 9px",
+          borderBottom: `1px solid ${C.panelBorder}`,
+          fontSize: 12,
+          color: C.navy,
+        }}
+      >
+        {fmt(item.CIFFOB, 2)}
+      </td>
+      <td
+        style={{
+          padding: "7px 9px",
+          borderBottom: `1px solid ${C.panelBorder}`,
+          fontSize: 12,
+          color: C.navy,
+        }}
+      >
+        {fmt(item.HSQty, 4)}
+      </td>
+      <td
+        style={{
+          padding: "7px 9px",
+          borderBottom: `1px solid ${C.panelBorder}`,
+          fontSize: 12,
+          color: C.navy,
+        }}
+      >
+        {item.HSUOM || "—"}
+      </td>
+      <td
+        style={{
+          padding: "7px 9px",
+          borderBottom: `1px solid ${C.panelBorder}`,
+          fontSize: 12,
+          color: C.navy,
+        }}
+      >
+        {fmt(item.GSTAmount, 2)}
+      </td>
+      <td
+        style={{
+          padding: "7px 9px",
+          borderBottom: `1px solid ${C.panelBorder}`,
+          fontSize: 12,
+          color: C.navy,
+        }}
+      >
+        {fmt(item.TotalLineAmount, 2)}
       </td>
     </tr>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Invoice tab — Supplier / Manufacturer autocomplete
-//
-// Suggestions are stored as "Code:CRUEI:Name:Name1" strings — the exact same
-// shape the legacy Invoice.jsx used for supplierManuFacturerSuggestions — and
-// filtering matches on the concatenated string starting with whatever's typed
-// into Code, which in practice means matching on Code prefix. Arrow-key
-// navigation, blur-to-match, and save-as-new (FaPlus) all mirror
-// handleSupplierManuFacturerChange / handleSupplierManuFacturerFocusOut /
-// saveSupplierManuFacturer from the legacy Invoice.jsx.
-// ---------------------------------------------------------------------------
-
-const supplierSuggestionsCache = { list: null };
-
-function useSupplierSuggestions() {
-  const [list, setList] = useState(() => supplierSuggestionsCache.list || []);
-
-  useEffect(() => {
-    if (supplierSuggestionsCache.list) {
-      setList(supplierSuggestionsCache.list);
-      return;
-    }
-    let cancelled = false;
-    API.get("/getCommonSupplierManufacturerPartTableInfo/")
-      .then((response) => {
-        const data = (response.data || []).map(
-          (i) => `${i.Code}:${i.CRUEI}:${i.Name}:${i.Name1}`,
-        );
-        supplierSuggestionsCache.list = data;
-        if (!cancelled) setList(data);
-      })
-      .catch((error) => {
-        console.error(
-          "Failed to fetch Supplier/Manufacturer suggestions",
-          error,
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return list; // ["CODE:CRUEI:NAME:NAME1", ...]
-}
-
-function InvoiceSupplierField({ supplier, onEdit }) {
-  const suggestions = useSupplierSuggestions();
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [filtered, setFiltered] = useState([]);
-  const [highlighted, setHighlighted] = useState(0);
-
-  const runFilter = (val) => {
-    if (!val) {
-      setShowDropdown(false);
-      setFiltered([]);
-      return;
-    }
-    const matches = suggestions.filter((i) =>
-      i.toLowerCase().startsWith(val.toLowerCase()),
-    );
-    setFiltered(matches.slice(0, 100));
-    setShowDropdown(matches.length > 0);
-  };
-
-  const applyItem = (item) => {
-    const [code, cruei, name, name1] = item.split(":");
-    onEdit(["invoice", "supplier", "code"], code || "");
-    onEdit(["invoice", "supplier", "uen"], cruei || "");
-    onEdit(["invoice", "supplier", "name"], name || "");
-    onEdit(["invoice", "supplier", "name1"], name1 || "");
-  };
-
-  const handleCodeChange = (val) => {
-    onEdit(["invoice", "supplier", "code"], val);
-    setHighlighted(0);
-    runFilter(val);
-  };
-
-  const handleSelect = (item) => {
-    applyItem(item);
-    setShowDropdown(false);
-  };
-
-  const handleKeyDown = (e) => {
-    if (!showDropdown || filtered.length === 0) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setHighlighted((prev) => (prev + 1 >= filtered.length ? 0 : prev + 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setHighlighted((prev) => (prev - 1 < 0 ? filtered.length - 1 : prev - 1));
-    } else if (e.key === "Enter" || e.key === "Tab") {
-      e.preventDefault();
-      handleSelect(filtered[highlighted]);
-    }
-  };
-
-  // Blur auto-match — same as legacy handleSupplierManuFacturerFocusOut:
-  // if the typed code exactly matches a known supplier, snap to its record.
-  const handleBlur = () => {
-    setTimeout(() => {
-      if (!supplier.code) {
-        setShowDropdown(false);
-        return;
-      }
-      const match = suggestions
-        .map((i) => i.split(":"))
-        .find(([code]) => code.toLowerCase() === supplier.code.toLowerCase());
-      if (match) {
-        const [code, cruei, name, name1] = match;
-        onEdit(["invoice", "supplier", "code"], code);
-        onEdit(["invoice", "supplier", "uen"], cruei);
-        onEdit(["invoice", "supplier", "name"], name);
-        onEdit(["invoice", "supplier", "name1"], name1);
-      }
-      setShowDropdown(false);
-    }, 150);
-  };
-
-  const handleSave = async () => {
-    if (!supplier.code) {
-      alert("Code is required!");
-      return;
-    }
-    const duplicate = suggestions.some(
-      (i) => i.split(":")[0].toLowerCase() === supplier.code.toLowerCase(),
-    );
-    if (duplicate) {
-      alert("Duplicate code found! Supplier/Manufacturer not saved.");
-      return;
-    }
-    const payload = {
-      Id: 0,
-      Code: supplier.code || "",
-      CRUEI: supplier.uen || "",
-      Name: supplier.name || "",
-      Name1: supplier.name1 || "",
-      TouchUser: DEFAULT_TOUCH_USER,
-      TouchTime: new Date().toISOString(),
-      Status: "Active",
-    };
-    try {
-      const response = await API.post(
-        "/postSupplierManufacturerPartTable/",
-        payload,
-      );
-      alert(
-        response.data?.message || "Supplier/Manufacturer saved successfully!",
-      );
-      supplierSuggestionsCache.list = [
-        ...suggestions,
-        `${payload.Code}:${payload.CRUEI}:${payload.Name}:${payload.Name1}`,
-      ];
-    } catch (err) {
-      console.error(
-        "Failed to save Supplier/Manufacturer:",
-        err.response?.data || err,
-      );
-      alert(
-        err.response?.data?.error ||
-          "Failed to save Supplier/Manufacturer, check console for details",
-      );
-    }
-  };
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-        marginBottom: 16,
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <span
-          style={{
-            color: C.navy,
-            fontWeight: 800,
-            fontSize: 11.5,
-            letterSpacing: 0.3,
-          }}
-        >
-          Supplier / Manufacturer
-        </span>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <FaSearch
-            style={{ color: C.bar, fontSize: 12, cursor: "pointer" }}
-            title="Search Supplier / Manufacturer"
-            onClick={() => runFilter(supplier.code)}
-          />
-          <FaPlus
-            style={{ cursor: "pointer", color: C.bar, fontSize: 12 }}
-            onClick={handleSave}
-            title="Save as new Supplier / Manufacturer"
-          />
-        </div>
-      </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
-          gap: 10,
-        }}
-      >
-        <InvoiceField label="Code">
-          <div style={{ position: "relative" }}>
-            <EditableInput
-              compact
-              value={supplier.code}
-              onChange={handleCodeChange}
-              onKeyDown={handleKeyDown}
-              onFocus={() => runFilter(supplier.code)}
-              onBlur={handleBlur}
-            />
-            {showDropdown && filtered.length > 0 && (
-              <PartySearchDropdown
-                items={filtered}
-                highlighted={highlighted}
-                onHover={setHighlighted}
-                onSelect={handleSelect}
-                getLabel={(item) => {
-                  const [code, , name] = item.split(":");
-                  return `${code} - ${name || ""}`;
-                }}
-              />
-            )}
-          </div>
-        </InvoiceField>
-        <InvoiceField label="UEN">
-          <EditableInput
-            compact
-            value={supplier.uen}
-            onChange={(v) => onEdit(["invoice", "supplier", "uen"], v)}
-          />
-        </InvoiceField>
-        <InvoiceField label="Name">
-          <EditableInput
-            compact
-            value={supplier.name}
-            onChange={(v) => onEdit(["invoice", "supplier", "name"], v)}
-          />
-        </InvoiceField>
-        <InvoiceField label="Name 1">
-          <EditableInput
-            compact
-            value={supplier.name1}
-            onChange={(v) => onEdit(["invoice", "supplier", "name1"], v)}
-          />
-        </InvoiceField>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// InvoicePartiesBlock — Supplier (editable, with suggestions above) +
-// Importer (read-only display of data.Importer — the Party tab is the only
-// place that edits it, so the two tabs never disagree).
-// ---------------------------------------------------------------------------
-
-function InvoicePartiesBlock({ data, onEdit }) {
-  const invoice = { ...blankInvoice(), ...(data.invoice || {}) };
-  const importer = data.Importer || {
-    Code: "",
-    CRUEI: "",
-    Name: "",
-    Name1: "",
-  };
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        border: `1px solid ${C.panelBorder}`,
-        borderRadius: 8,
-        padding: 14,
-        marginBottom: 18,
-        background: "#fafcfd",
-      }}
-    >
-      <InvoiceSupplierField supplier={invoice.supplier} onEdit={onEdit} />
-
-      {/* IMPORTER — read-only, mirrors data.Importer from the Party tab */}
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 6,
-          marginBottom: 16,
-        }}
-      >
-        <span
-          style={{
-            color: C.navy,
-            fontWeight: 800,
-            fontSize: 11.5,
-            letterSpacing: 0.3,
-          }}
-        >
-          Importer
-        </span>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 10,
-          }}
-        >
-          <InvoiceField label="Code">
-            <EditableInput compact value={importer.Code} disabled />
-          </InvoiceField>
-          <InvoiceField label="CRUEI">
-            <EditableInput compact value={importer.CRUEI} disabled />
-          </InvoiceField>
-          <InvoiceField label="Name">
-            <EditableInput compact value={importer.Name} disabled />
-          </InvoiceField>
-          <InvoiceField label="Name 1">
-            <EditableInput compact value={importer.Name1} disabled />
-          </InvoiceField>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const TOTAL_VALUE_GBP_ALIASES = ["totalvaluegbp", "totalvalue"];
-
-function InvoiceDetailsBlock({ data, onEdit }) {
-  const invoice = {
-    ...blankInvoice(),
-    ...(data.invoice || {}),
-    gst: {
-      charges:
-        data.invoice?.gst?.charges && data.invoice.gst.charges !== "0"
-          ? data.invoice.gst.charges
-          : "9",
-      amountSgd: data.invoice?.gst?.amountSgd || "",
-    },
-  };
-  const path = ["invoice"];
-
-  const termTypeOptions = useTermTypeOptions();
-  const currencyOptions = useCurrencyOptions();
-  const currencyNames = currencyOptions.map((c) => c.Currency).filter(Boolean);
-
-  const visibility = getTermTypeVisibility(invoice.termType);
-  const showFreight = visibility.showFreight;
-  const showInsurance = visibility.showInsurance;
-
-  const findCurrencyRate = (name) => {
-    const match = currencyOptions.find((c) => c.Currency === name);
-    return match ? String(match.CurrencyRate) : "";
-  };
-
-  const handleCurrencyChange = (rowPath, name) => {
-    onEdit([...rowPath, "currency"], name);
-    onEdit([...rowPath, "exRate"], findCurrencyRate(name));
-  };
-
-  // ── Prefill Invoice Value's Amount only, from the top-level totalValueGBP
-  //    field in the incoming declaration payload. Currency and Ex.Rate are
-  //    left untouched — those still come from the user picking a currency
-  //    (handleCurrencyChange) or from term-type presets, same as before.
-  //    Only fills when Amount is still empty, so it never overwrites a
-  //    value the user or a saved record already has.
-  const totalValueGBPKey = findRowKey(data, TOTAL_VALUE_GBP_ALIASES);
-  const totalValueGBP = totalValueGBPKey ? data[totalValueGBPKey] : "";
-
-  useEffect(() => {
-    if (totalValueGBP === "" || totalValueGBP == null) return;
-    if (invoice.invoiceValue.amount) return; // don't overwrite an existing value
-
-    onEdit([...path, "invoiceValue", "amount"], String(totalValueGBP));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [totalValueGBP]);
-
-  // Term Type drives which rows show and resets the calculation table —
-  // mirrors handleTermChange() in the legacy Invoice.jsx.
-  const handleTermTypeChange = (newTermType) => {
-    const rule = getTermTypeVisibility(newTermType);
-    const nextInvoice = {
-      ...invoice,
-      termType: newTermType,
-      invoiceValue: blankValueRow(),
-      otherValue: blankValueRow(),
-      freightValue: { includeInCif: false, ...blankValueRow() },
-      insuranceValue: {
-        includeInCif: false,
-        ...blankValueRow(),
-        ...(rule.presetInsurance
-          ? { charges: "1.00", currency: "SGD", exRate: "1.000000" }
-          : {}),
-      },
-      costInsuranceFreight: { amountSgd: "" },
-      gst: { charges: "9", amountSgd: "" },
-    };
-    onEdit(path, nextInvoice);
-  };
-
-  // ── CALCULATIONS — mirrors the totals useEffect in legacy Invoice.jsx ──
-  useEffect(() => {
-    const invAmount = parseFloat(invoice.invoiceValue.amount) || 0;
-    const invEx = parseFloat(invoice.invoiceValue.exRate) || 0;
-    const invDollar = invAmount * invEx;
-
-    const othAmount = parseFloat(invoice.otherValue.amount) || 0;
-    const othEx = parseFloat(invoice.otherValue.exRate) || 0;
-    const othDollar = othAmount * othEx;
-
-    let frAmount = 0;
-    let frDollar = 0;
-    if (showFreight) {
-      const frCharge = parseFloat(invoice.freightValue.charges) || 0;
-      const frEx = parseFloat(invoice.freightValue.exRate) || 0;
-      frAmount = parseFloat(invoice.freightValue.amount) || 0;
-
-      if (frCharge > 0 && frEx > 0) {
-        const calculated = (invDollar * frCharge) / 100 / frEx;
-        if (invoice.freightValue.amount !== calculated.toFixed(2)) {
-          onEdit([...path, "freightValue", "amount"], calculated.toFixed(2));
-        }
-        frAmount = calculated;
-      }
-      frDollar = frAmount * frEx;
-    }
-
-    let insAmount = 0;
-    let insDollar = 0;
-    if (showInsurance) {
-      const charge = parseFloat(invoice.insuranceValue.charges) || 0;
-      const insEx = parseFloat(invoice.insuranceValue.exRate) || 0;
-
-      if (charge > 0) {
-        const base = showFreight ? invDollar + frDollar : invDollar;
-        const calculated = (base * charge) / 100;
-        if (invoice.insuranceValue.amount !== calculated.toFixed(2)) {
-          onEdit([...path, "insuranceValue", "amount"], calculated.toFixed(2));
-        }
-        insAmount = calculated;
-      } else {
-        insAmount = parseFloat(invoice.insuranceValue.amount) || 0;
-      }
-      insDollar = insAmount * insEx;
-    }
-
-    const nextInvDollar = invDollar.toFixed(2);
-    const nextOthDollar = othDollar.toFixed(2);
-    const nextFrDollar = frDollar.toFixed(2);
-    const nextInsDollar = insDollar.toFixed(2);
-
-    if (invoice.invoiceValue.amountSgd !== nextInvDollar) {
-      onEdit([...path, "invoiceValue", "amountSgd"], nextInvDollar);
-    }
-    if (invoice.otherValue.amountSgd !== nextOthDollar) {
-      onEdit([...path, "otherValue", "amountSgd"], nextOthDollar);
-    }
-    if (invoice.freightValue.amountSgd !== nextFrDollar) {
-      onEdit([...path, "freightValue", "amountSgd"], nextFrDollar);
-    }
-    if (invoice.insuranceValue.amountSgd !== nextInsDollar) {
-      onEdit([...path, "insuranceValue", "amountSgd"], nextInsDollar);
-    }
-
-    const cif = invDollar + othDollar + frDollar + insDollar;
-    const cifFixed = cif.toFixed(2);
-    if (invoice.costInsuranceFreight.amountSgd !== cifFixed) {
-      onEdit([...path, "costInsuranceFreight", "amountSgd"], cifFixed);
-    }
-
-    const gstPercent = parseFloat(invoice.gst.charges) || 0;
-    const gstFixed = (cif * (gstPercent / 100)).toFixed(2);
-    if (invoice.gst.amountSgd !== gstFixed) {
-      onEdit([...path, "gst", "amountSgd"], gstFixed);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    invoice.invoiceValue.amount,
-    invoice.invoiceValue.exRate,
-    invoice.otherValue.amount,
-    invoice.otherValue.exRate,
-    invoice.freightValue.amount,
-    invoice.freightValue.charges,
-    invoice.freightValue.exRate,
-    invoice.insuranceValue.amount,
-    invoice.insuranceValue.charges,
-    invoice.insuranceValue.exRate,
-    invoice.gst.charges,
-    showFreight,
-    showInsurance,
-  ]);
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        border: `1px solid ${C.panelBorder}`,
-        borderRadius: 8,
-        padding: 14,
-        marginBottom: 18,
-        background: "#fafcfd",
-      }}
-    >
-      <div
-        style={{
-          background: C.bar,
-          color: C.barText,
-          fontWeight: 800,
-          fontSize: 11.5,
-          letterSpacing: 0.4,
-          textAlign: "center",
-          padding: "7px 0",
-          borderRadius: 4,
-          marginBottom: 14,
-        }}
-      >
-        INVOICE INFORMATION
-      </div>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, 1fr)",
-          gap: 14,
-          marginBottom: 18,
-        }}
-      >
-        <InvoiceField label="Serial Number">
-          <EditableInput
-            compact
-            value={invoice.serialNumber}
-            onChange={(v) => onEdit([...path, "serialNumber"], v)}
-          />
-        </InvoiceField>
-
-        <InvoiceField label="Invoice Date">
-          <InvoiceDateField
-            value={invoice.invoiceDate}
-            onChange={(v) => onEdit([...path, "invoiceDate"], v)}
-          />
-        </InvoiceField>
-
-        <InvoiceField label="Invoice Number">
-          <EditableInput
-            compact
-            value={invoice.invoiceNumber}
-            onChange={(v) => onEdit([...path, "invoiceNumber"], v)}
-          />
-        </InvoiceField>
-
-        <InvoiceField label="Term Type">
-          <InvoiceSelect
-            value={invoice.termType}
-            onChange={handleTermTypeChange}
-            options={termTypeOptions.map((t) => t.Name).filter(Boolean)}
-          />
-        </InvoiceField>
-
-        <InvoiceField label="Supplier Importer Relationship">
-          <InvoiceSelect
-            value={invoice.supplierImporterRelationship}
-            onChange={(v) =>
-              onEdit([...path, "supplierImporterRelationship"], v)
-            }
-            options={RELATIONSHIP_OPTIONS}
-          />
-        </InvoiceField>
-
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            paddingTop: 18,
-          }}
-        >
-          <input
-            type="checkbox"
-            checked={!!invoice.preferentialDutyRateIndicator}
-            onChange={(e) =>
-              onEdit(
-                [...path, "preferentialDutyRateIndicator"],
-                e.target.checked,
-              )
-            }
-            style={{ width: 16, height: 16, accentColor: C.bar }}
-          />
-          <span style={{ fontSize: 12, color: C.navy }}>
-            Preferential Duty Rate Indicator
-          </span>
-        </div>
-      </div>
-
-      <div style={{ overflowX: "auto" }}>
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: 12,
-            tableLayout: "fixed",
-          }}
-        >
-          <thead>
-            <tr>
-              {[
-                "Item",
-                "Charges (%)",
-                "Currency",
-                "Ex.Rate",
-                "Amount",
-                "Amount ($)",
-              ].map((h) => (
-                <th
-                  key={h}
-                  style={{
-                    background: C.tableHead,
-                    color: "#fff",
-                    padding: "8px 9px",
-                    textAlign: "left",
-                    fontSize: 10.5,
-                    letterSpacing: 0.3,
-                  }}
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            <InvoiceValueRow
-              label="Invoice Value"
-              row={invoice.invoiceValue}
-              path={[...path, "invoiceValue"]}
-              onEdit={onEdit}
-              rowBg={C.rowAlt}
-              currencyOptions={currencyNames}
-              onCurrencyChange={(name) =>
-                handleCurrencyChange([...path, "invoiceValue"], name)
-              }
-            />
-            <InvoiceValueRow
-              label="Other Value"
-              row={invoice.otherValue}
-              path={[...path, "otherValue"]}
-              onEdit={onEdit}
-              rowBg="#fff"
-              currencyOptions={currencyNames}
-              onCurrencyChange={(name) =>
-                handleCurrencyChange([...path, "otherValue"], name)
-              }
-            />
-            {showFreight && (
-              <InvoiceValueRow
-                label="Freight Value (Incl. Other Value)"
-                row={invoice.freightValue}
-                path={[...path, "freightValue"]}
-                onEdit={onEdit}
-                hasCheckbox
-                rowBg={C.rowAlt}
-                currencyOptions={currencyNames}
-                onCurrencyChange={(name) =>
-                  handleCurrencyChange([...path, "freightValue"], name)
-                }
-                amountDisabled={parseFloat(invoice.freightValue.charges) > 0}
-              />
-            )}
-            {showInsurance && (
-              <InvoiceValueRow
-                label="Insurance Value (Incl. Freight Value)"
-                row={invoice.insuranceValue}
-                path={[...path, "insuranceValue"]}
-                onEdit={onEdit}
-                hasCheckbox
-                rowBg="#fff"
-                currencyOptions={currencyNames}
-                onCurrencyChange={(name) =>
-                  handleCurrencyChange([...path, "insuranceValue"], name)
-                }
-                amountDisabled={parseFloat(invoice.insuranceValue.charges) > 0}
-              />
-            )}
-            <tr style={{ background: C.rowAlt }}>
-              <td
-                style={{
-                  padding: "7px 9px",
-                  borderBottom: `1px solid ${C.panelBorder}`,
-                  fontSize: 12,
-                  color: C.navy,
-                }}
-              >
-                Cost, Insurance &amp; Freight
-              </td>
-              <td
-                colSpan={4}
-                style={{ borderBottom: `1px solid ${C.panelBorder}` }}
-              />
-              <td
-                style={{
-                  padding: 6,
-                  borderBottom: `1px solid ${C.panelBorder}`,
-                }}
-              >
-                <EditableInput
-                  compact
-                  value={invoice.costInsuranceFreight.amountSgd}
-                  placeholder="0.00"
-                  disabled
-                />
-              </td>
-            </tr>
-            <tr>
-              <td style={{ padding: "7px 9px", fontSize: 12, color: C.navy }}>
-                GST
-              </td>
-              <td style={{ padding: 6 }}>
-                <EditableInput
-                  compact
-                  value={invoice.gst.charges}
-                  onChange={(v) => onEdit([...path, "gst", "charges"], v)}
-                  placeholder="0.00"
-                />
-              </td>
-              <td colSpan={2} />
-              <td />
-              <td style={{ padding: 6 }}>
-                <EditableInput
-                  compact
-                  value={invoice.gst.amountSgd}
-                  placeholder="0.00"
-                  disabled
-                />
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function PartyFieldRow({ children }) {
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr",
-        gap: 8,
-        marginBottom: 8,
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-function PartyFieldCell({ label, children }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        position: "relative",
-      }}
-    >
-      {label && (
-        <span
-          style={{
-            color: C.sub,
-            fontWeight: 700,
-            fontSize: 10,
-            letterSpacing: 0.3,
-          }}
-        >
-          {label}
-        </span>
-      )}
-      {children}
-    </div>
-  );
-}
-
-function MasterPartyField({ type, data, onEdit }) {
-  const cfg = PARTY_TYPES[type];
-  const { list, commonCodes } = usePartySuggestions(type);
-  const path = [cfg.dataKey];
-  const party = data[cfg.dataKey] || blankMasterParty(cfg);
-  const codeKey = cfg.hasClaimantNameFields ? "ClaimantCode" : "Code";
-  const codeInputRef = useRef(null);
-
-  const [showDropdown, setShowDropdown] = useState(false);
-  const [filtered, setFiltered] = useState([]);
-  const [highlighted, setHighlighted] = useState(0);
-
-  useEffect(() => {
-    if (!cfg.defaultCode) return;
-    if (!list.length) return;
-    if (party.Name) return;
-    if ((party.Code || "").toLowerCase() !== cfg.defaultCode.toLowerCase()) {
-      return;
-    }
-
-    const normalize = (s) =>
-      String(s || "")
-        .trim()
-        .toLowerCase()
-        .replace(/\.$/, "");
-    const target = normalize(cfg.defaultCode);
-
-    const match = list.find((i) => normalize(i[codeKey]) === target);
-
-    if (match) {
-      onEdit([...path, "Code"], match[codeKey] || cfg.defaultCode);
-      onEdit([...path, "CRUEI"], match.CRUEI || "");
-      onEdit([...path, "Name"], match.Name || "");
-      onEdit([...path, "Name1"], match.Name1 || "");
-      if (cfg.hasClaimantNameFields) {
-        onEdit([...path, "ClaimantName"], match.ClaimantName || "");
-        onEdit([...path, "ClaimantName1"], match.ClaimantName1 || "");
-      }
-    }
-  }, [list]);
-
-  const runFilter = (val) => {
-    if (!val) {
-      setShowDropdown(false);
-      setFiltered([]);
-      return;
-    }
-    const search = val.toLowerCase();
-    const matches = list.filter((i) => {
-      const code = String(i[codeKey] || "").toLowerCase();
-      const name = String(i.Name || "").toLowerCase();
-      return code.startsWith(search) || name.startsWith(search);
-    });
-    setFiltered(matches.slice(0, 100));
-    setShowDropdown(matches.length > 0);
-  };
-
-  const applyRecord = (rec) => {
-    onEdit([...path, "Code"], rec[codeKey] || "");
-    onEdit([...path, "CRUEI"], rec.CRUEI || "");
-    onEdit([...path, "Name"], rec.Name || "");
-    onEdit([...path, "Name1"], rec.Name1 || "");
-    if (cfg.hasClaimantNameFields) {
-      onEdit([...path, "ClaimantName"], rec.ClaimantName || "");
-      onEdit([...path, "ClaimantName1"], rec.ClaimantName1 || "");
-    }
-  };
-  const handleCodeChange = (val) => {
-    onEdit([...path, "Code"], val);
-    setHighlighted(0);
-    runFilter(val);
-  };
-
-  const handleSelect = (rec) => {
-    applyRecord(rec);
-    setShowDropdown(false);
-  };
-
-  const handleKeyDown = (e) => {
-    if (!showDropdown || filtered.length === 0) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setHighlighted((prev) => (prev + 1 >= filtered.length ? 0 : prev + 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setHighlighted((prev) => (prev - 1 < 0 ? filtered.length - 1 : prev - 1));
-    } else if (e.key === "Enter" || e.key === "Tab") {
-      e.preventDefault();
-      handleSelect(filtered[highlighted]);
-    }
-  };
-
-  const handleBlur = () => {
-    setTimeout(() => {
-      if (!party.Code) {
-        setShowDropdown(false);
-        return;
-      }
-      const match = list.find(
-        (i) =>
-          String(i[codeKey] || "").toLowerCase() === party.Code.toLowerCase(),
-      );
-      if (match) {
-        applyRecord(match);
-      }
-      setShowDropdown(false);
-    }, 150);
-  };
-
-  const handleSave = async () => {
-    if (!party.Code) {
-      alert("Code is required!");
-      codeInputRef.current?.focus();
-      return;
-    }
-    if (commonCodes.has(party.Code.toLowerCase())) {
-      alert(`Duplicate code found! ${cfg.label} not saved.`);
-      return;
-    }
-
-    const payload = {
-      Id: 0,
-      [codeKey]: (party.Code || "").toUpperCase(),
-      CRUEI: (party.CRUEI || "").toUpperCase(),
-      Name: (party.Name || "").toUpperCase(),
-      Name1: (party.Name1 || "").toUpperCase(),
-      ...(cfg.hasClaimantNameFields
-        ? {
-            ClaimantName: (party.ClaimantName || "").toUpperCase(),
-            ClaimantName1: (party.ClaimantName1 || "").toUpperCase(),
-            Name2: "",
-          }
-        : {}),
-      TouchUser: DEFAULT_TOUCH_USER,
-      TouchTime: new Date().toISOString(),
-      Status: "Active",
-    };
-
-    try {
-      const response = await API.post(cfg.saveEndpoint, payload);
-      alert(
-        response.data?.message ||
-          response.data?.Result ||
-          `${cfg.label} saved successfully!`,
-      );
-      console.log(`Saved ${cfg.label}:`, response.data);
-      commonCodes.add(party.Code.toLowerCase());
-    } catch (err) {
-      console.error(`Failed to save ${cfg.label}:`, err.response?.data || err);
-      alert(
-        err.response?.data?.error ||
-          err.response?.data?.Result ||
-          `Failed to save ${cfg.label}, check console for details`,
-      );
-    }
-  };
-
-  return (
-    <div
-      style={{
-        marginBottom: 14,
-        paddingBottom: 12,
-        borderBottom: `1px solid ${C.panelBorder}`,
-      }}
-    >
-      {/* LABEL + ICONS */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 8,
-        }}
-      >
-        <span
-          style={{
-            color: C.navy,
-            fontWeight: 700,
-            fontSize: 11.5,
-            letterSpacing: 0.2,
-            textTransform: "uppercase",
-          }}
-        >
-          {cfg.label}
-        </span>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <FaSearch
-            style={{ color: C.bar, fontSize: 12, cursor: "pointer" }}
-            title={`Search ${cfg.label}`}
-            onClick={() => codeInputRef.current?.focus()}
-          />
-          <FaPlus
-            style={{ cursor: "pointer", color: C.bar, fontSize: 12 }}
-            onClick={handleSave}
-            title={`Save as new ${cfg.label}`}
-          />
-        </div>
-      </div>
-
-      {/* LINE 1: CODE | CRUEI */}
-      <PartyFieldRow>
-        <PartyFieldCell label="Code">
-          <EditableInput
-            compact
-            value={party.Code}
-            onChange={handleCodeChange}
-            onKeyDown={handleKeyDown}
-            onFocus={() => runFilter(party.Code)}
-            onBlur={handleBlur}
-            placeholder="CODE"
-          />
-          {showDropdown && filtered.length > 0 && (
-            <PartySearchDropdown
-              items={filtered}
-              highlighted={highlighted}
-              onHover={setHighlighted}
-              onSelect={handleSelect}
-              getLabel={(item) => `${item[codeKey]} - ${item.Name || ""}`}
-            />
-          )}
-        </PartyFieldCell>
-        <PartyFieldCell label="CRUEI">
-          <EditableInput
-            compact
-            value={party.CRUEI}
-            onChange={(v) => onEdit([...path, "CRUEI"], v)}
-            placeholder="CRUEI"
-          />
-        </PartyFieldCell>
-      </PartyFieldRow>
-
-      {/* LINE 2: NAME | NAME1 */}
-      <PartyFieldRow>
-        <PartyFieldCell label="Name">
-          <EditableInput
-            compact
-            value={party.Name}
-            onChange={(v) => onEdit([...path, "Name"], v)}
-            placeholder="NAME"
-          />
-        </PartyFieldCell>
-        <PartyFieldCell label="Name1">
-          <EditableInput
-            compact
-            value={party.Name1}
-            onChange={(v) => onEdit([...path, "Name1"], v)}
-            placeholder="NAME1"
-          />
-        </PartyFieldCell>
-      </PartyFieldRow>
-
-      {/* CLAIMANT ID / CLAIMANT NAME — extra line, same two-column pattern */}
-      {cfg.hasClaimantNameFields && (
-        <PartyFieldRow>
-          <PartyFieldCell label="Claimant Id">
-            <EditableInput
-              compact
-              value={party.ClaimantName}
-              onChange={(v) => onEdit([...path, "ClaimantName"], v)}
-              placeholder="CLAIMANT ID"
-            />
-          </PartyFieldCell>
-          <PartyFieldCell label="Claimant Name">
-            <EditableInput
-              compact
-              value={party.ClaimantName1}
-              onChange={(v) => onEdit([...path, "ClaimantName1"], v)}
-              placeholder="CLAIMANT NAME"
-            />
-          </PartyFieldCell>
-        </PartyFieldRow>
-      )}
-    </div>
-  );
-}
-
-function EditableValue({ value, path, onEdit }) {
-  const fieldKey = path[path.length - 1];
-
-  if (isItemsField(fieldKey)) {
-    const rows =
-      Array.isArray(value) && value.length > 0 && isPlainObject(value[0])
-        ? value
-        : [blankItemRow()];
-
-    const getCell = (row, spec) => {
-      const existingKey = findRowKey(row, spec.aliases);
-      return existingKey ? row[existingKey] : "";
-    };
-
-    const updateCell = (rowIdx, spec, v) => {
-      const row = rows[rowIdx] || {};
-      const existingKey = findRowKey(row, spec.aliases) || spec.key;
-      onEdit([...path, rowIdx, existingKey], v);
-    };
-
-    const selectHsCode = (rowIdx, hsItem) => {
-      const row = rows[rowIdx] || {};
-      const codeSpec = ITEM_FIELD_SPECS.find((s) => s.key === "code");
-      const descSpec = ITEM_FIELD_SPECS.find((s) => s.key === "description");
-      const codeKey = findRowKey(row, codeSpec.aliases) || codeSpec.key;
-      const descKey = findRowKey(row, descSpec.aliases) || descSpec.key;
-      onEdit([...path, rowIdx, codeKey], hsItem.HSCode || "");
-      onEdit([...path, rowIdx, descKey], hsItem.Description || "");
-    };
-
-    const removeRow = (rowIdx) => {
-      const next = rows.slice();
-      next.splice(rowIdx, 1);
-      onEdit(path, next);
-    };
-
-    const addRow = () => onEdit(path, [...rows, blankItemRow()]);
-
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {rows.map((row, i) => (
-          <div
-            key={i}
-            style={{
-              border: `1px solid ${C.panelBorder}`,
-              borderRadius: 8,
-              padding: 12,
-              background: i % 2 ? C.rowAlt : "#fff",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: 10,
-              }}
-            >
-              <span
-                style={{
-                  color: C.navy,
-                  fontWeight: 800,
-                  fontSize: 11.5,
-                  letterSpacing: 0.3,
-                }}
-              >
-                Item {i + 1}
-              </span>
-              <RemoveBtn onClick={() => removeRow(i)} title="Remove item" />
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: "10px 12px",
-              }}
-            >
-              {ITEM_FIELD_SPECS.map((spec) => (
-                <div
-                  key={spec.key}
-                  style={{ display: "flex", flexDirection: "column", gap: 4 }}
-                >
-                  <span
-                    style={{
-                      color: C.sub,
-                      fontWeight: 700,
-                      fontSize: 10.5,
-                      letterSpacing: 0.3,
-                    }}
-                  >
-                    {spec.label}
-                  </span>
-                  {spec.key === "code" ? (
-                    <HsCodeInput
-                      value={truncateHsCodeDisplay(getCell(row, spec))}
-                      onChangeText={(v) => updateCell(i, spec, v)}
-                      onSelect={(hsItem) => selectHsCode(i, hsItem)}
-                    />
-                  ) : (
-                    <EditableInput
-                      compact
-                      value={getCell(row, spec)}
-                      onChange={(v) => updateCell(i, spec, v)}
-                    />
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-        <AddBtn onClick={addRow} label="+ Add Item" />
-      </div>
-    );
-  }
-
-  if (Array.isArray(value) && value.length > 0 && isPlainObject(value[0])) {
-    const columns = Array.from(
-      new Set(value.flatMap((row) => Object.keys(row))),
-    );
-    const updateCell = (rowIdx, col, v) => onEdit([...path, rowIdx, col], v);
-    const removeRow = (rowIdx) => {
-      const next = value.slice();
-      next.splice(rowIdx, 1);
-      onEdit(path, next);
-    };
-    const addRow = () => {
-      const blank = Object.fromEntries(columns.map((c) => [c, ""]));
-      onEdit(path, [...value, blank]);
-    };
-    return (
-      <div>
-        <div style={{ overflowX: "auto" }}>
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              fontSize: 12.5,
-            }}
-          >
-            <thead>
-              <tr>
-                <th style={{ background: C.tableHead, width: 34 }} />
-                {columns.map((col) => (
-                  <th
-                    key={col}
-                    style={{
-                      background: C.tableHead,
-                      color: "#fff",
-                      padding: "8px 10px",
-                      textAlign: "left",
-                      fontSize: 11,
-                      letterSpacing: 0.4,
-                    }}
-                  >
-                    {formatLabel(col)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {value.map((row, i) => (
-                <tr key={i} style={{ background: i % 2 ? C.rowAlt : "#fff" }}>
-                  <td
-                    style={{
-                      padding: 6,
-                      borderBottom: `1px solid ${C.panelBorder}`,
-                      textAlign: "center",
-                    }}
-                  >
-                    <RemoveBtn
-                      onClick={() => removeRow(i)}
-                      title="Remove row"
-                    />
-                  </td>
-                  {columns.map((col) => (
-                    <td
-                      key={col}
-                      style={{
-                        padding: 6,
-                        borderBottom: `1px solid ${C.panelBorder}`,
-                      }}
-                    >
-                      <EditableInput
-                        compact
-                        value={row[col]}
-                        onChange={(v) => updateCell(i, col, v)}
-                      />
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <AddBtn onClick={addRow} label="+ Add row" />
-      </div>
-    );
-  }
-
-  if (Array.isArray(value)) {
-    const updateItem = (i, v) => {
-      const next = value.slice();
-      next[i] = v;
-      onEdit(path, next);
-    };
-    const removeItem = (i) => {
-      const next = value.slice();
-      next.splice(i, 1);
-      onEdit(path, next);
-    };
-    const addItem = () => onEdit(path, [...value, ""]);
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {value.map((item, i) => (
-          <div
-            key={i}
-            style={{ display: "flex", gap: 6, alignItems: "center" }}
-          >
-            <EditableInput
-              compact
-              value={item}
-              onChange={(v) => updateItem(i, v)}
-            />
-            <RemoveBtn onClick={() => removeItem(i)} />
-          </div>
-        ))}
-        <AddBtn onClick={addItem} label="+ Add" />
-      </div>
-    );
-  }
-
-  if (isPlainObject(value)) {
-    const entries = Object.entries(value);
-    return (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
-          background: "#fafcfd",
-          border: `1px solid ${C.panelBorder}`,
-          borderRadius: 6,
-          padding: 12,
-        }}
-      >
-        {renderGroupedEntries(entries, path, onEdit, {
-          labelStyle: { color: C.sub, fontWeight: 700, fontSize: 11.5 },
-          renderComplex: (k, v) => (
-            <div key={k} className="decl-field-row">
-              <span
-                className="decl-field-label"
-                style={{ color: C.sub, fontWeight: 700, fontSize: 11.5 }}
-              >
-                {formatLabel(k)}
-              </span>
-              <span className="decl-field-value">
-                <EditableValue value={v} path={[...path, k]} onEdit={onEdit} />
-              </span>
-            </div>
-          ),
-        })}
-      </div>
-    );
-  }
-
-  if (typeof value === "boolean") {
-    return (
-      <input
-        type="checkbox"
-        checked={value}
-        onChange={(e) => onEdit(path, e.target.checked)}
-        style={{ width: 16, height: 16, accentColor: C.bar }}
-      />
-    );
-  }
-
-  return (
-    <EditableInput value={value ?? ""} onChange={(v) => onEdit(path, v)} />
-  );
-}
-
-function deepUpperCase(value) {
-  if (typeof value === "string") return value.toUpperCase();
-  if (Array.isArray(value)) return value.map(deepUpperCase);
-  if (isPlainObject(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, deepUpperCase(v)]),
-    );
-  }
-  return value;
-}
-
-function deepUpperCaseTopLevelExcept(obj, skipKeysNormalized) {
-  if (!isPlainObject(obj)) return deepUpperCase(obj);
-  const result = {};
-  for (const [k, v] of Object.entries(obj)) {
-    result[k] = skipKeysNormalized.has(normalizeKey(k)) ? v : deepUpperCase(v);
-  }
-  return result;
-}
-
-const WRAPPER_KEYS = ["json", "output", "data", "result", "body", "response"];
-
-function tryParseJsonString(str) {
-  if (typeof str !== "string") return str;
-  let s = str.trim();
-  const fenceMatch = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (fenceMatch) s = fenceMatch[1].trim();
-  try {
-    return JSON.parse(s);
-  } catch {
-    return str;
-  }
-}
-
-function normalizeDeclaration(raw) {
-  let val = raw;
-  let depth = 0;
-  while (depth < 6) {
-    if (typeof val === "string") {
-      const parsed = tryParseJsonString(val);
-      if (parsed !== val) {
-        val = parsed;
-        depth++;
-        continue;
-      }
-      break;
-    }
-    if (Array.isArray(val)) {
-      if (val.length === 0) return null;
-      val = val[0];
-      depth++;
-      continue;
-    }
-    if (isPlainObject(val)) {
-      const keys = Object.keys(val);
-      if (keys.length === 1 && WRAPPER_KEYS.includes(keys[0].toLowerCase())) {
-        val = val[keys[0]];
-        depth++;
-        continue;
-      }
-    }
-    break;
-  }
-
-  return isPlainObject(val) ? val : null;
-}
-
-function unwrapToObjectOrArray(raw) {
-  let val = raw;
-  let depth = 0;
-  while (depth < 6) {
-    if (typeof val === "string") {
-      const parsed = tryParseJsonString(val);
-      if (parsed !== val) {
-        val = parsed;
-        depth++;
-        continue;
-      }
-      break;
-    }
-    if (isPlainObject(val)) {
-      const keys = Object.keys(val);
-      if (keys.length === 1 && WRAPPER_KEYS.includes(keys[0].toLowerCase())) {
-        val = val[keys[0]];
-        depth++;
-        continue;
-      }
-    }
-    break;
-  }
-  return val;
-}
-
-function looksLikeMultipleDeclarations(arr) {
-  return (
-    Array.isArray(arr) &&
-    arr.length > 1 &&
-    arr.every(
-      (v) =>
-        isPlainObject(v) &&
-        (findRowKey(v, ["fileindex"]) || findRowKey(v, ["consignmentno"])),
-    )
-  );
-}
-
-function normalizeDeclarations(raw) {
-  const unwrapped = unwrapToObjectOrArray(raw);
-
-  if (Array.isArray(unwrapped)) {
-    if (unwrapped.length === 0) return [null];
-
-    if (looksLikeMultipleDeclarations(unwrapped)) {
-      return unwrapped.map((item) => {
-        const inner = unwrapToObjectOrArray(item);
-        if (isPlainObject(inner)) return inner;
-
-        return normalizeDeclaration(inner);
-      });
-    }
-
-    return [normalizeDeclaration(unwrapped)];
-  }
-
-  return [isPlainObject(unwrapped) ? unwrapped : null];
-}
-
-function blankDeclaration() {
-  return {
-    FileIndex: "",
-    InvoiceIndex: "",
-    Format: "",
-    ConsignmentNo: "",
-    Shipper: {
-      Name: "",
-      ContactNumber: "",
-    },
-    Receiver: {
-      Name: "",
-      Country: "",
-      ContactNumber: "",
-    },
-    NoOfParcels: "",
-    TotalWeight: "",
-
-    MessageType: "",
-
-    DeclarationType: "GST : GST (Including Duty Exemption)",
-    PreviousPermitNo: "",
-    CargoPackType: "",
-    InwardTransportMode: "",
-    BgIndicator: "",
-    OverrideExgeRate: false,
-    SupplyIndicator: false,
-    ReferenceDocument: false,
-    MailboxId: "",
-    DeclarantName: "",
-    DeclarantCode: "",
-    DeclarantTelephone: "",
-    CrUeiNo: "",
-
-    // Cargo tab fields — mirrors the real InPayment Cargo page.
-    // NOTE: "Mode" is intentionally NOT duplicated here — the Cargo tab's
-    // Mode field reads straight from InwardTransportMode above (see
-    // CargoTabContent), so there is only ever one source of truth.
-    TotalOuterPack: "",
-    TotalOuterPackUnit: "PKG",
-    TotalGrossWeight: "",
-    TotalGrossWeightUnit: "KGM",
-    PermitGrossWeight: "",
-    ReleaseLocation: { Code: "", Name: "" },
-    ReceiptLocation: { Code: "", Name: "" },
-    LoadingPort: { Code: "", Name: "" },
-    Hawb: "",
-    ArrivalDate: "",
-    FlightNumber: "",
-    AircraftRegNo: "",
-    Mawb: "",
-    BlanketStartDate: "",
-
-    Importer: { Code: "", CRUEI: "", Name: "", Name1: "" },
-    InwardCarrierAgent: blankMasterParty(PARTY_TYPES.inwardCarrierAgent),
-    FreightForwarder: blankMasterParty(PARTY_TYPES.freightForwarder),
-    ClaimantParty: blankMasterParty(PARTY_TYPES.claimantParty),
-
-    // Summary tab
-    ApprovedBy: "",
-    CustomerRemarks: "",
-    TradeRemarks: "",
-    FormatRemark: "",
-    CrossReference: "",
-    InternalRemarks: "",
-    DeclarationChecked: false,
-
-    invoice: blankInvoice(),
-    invoices: [],
-    items: [],
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Tabs
-// ---------------------------------------------------------------------------
-
-const TABS = [
-  { id: "header", label: "Header" },
-  { id: "party", label: "Party" },
-  { id: "cargo", label: "Cargo" },
-  { id: "invoice", label: "Invoice" },
-  { id: "items", label: "Items" },
-  { id: "summary", label: "Summary" },
-];
-
-function TabBar({ active, onChange }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        gap: 8,
-        marginBottom: 16,
-        flexWrap: "wrap",
-      }}
-    >
-      {TABS.map((tab) => {
-        const isActive = tab.id === active;
-        return (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => onChange(tab.id)}
-            style={{
-              border: `1.5px solid ${isActive ? C.danger : "transparent"}`,
-              background: isActive ? C.dangerBg : C.tabIdleBg,
-              color: isActive ? C.danger : C.sub,
-              fontWeight: 800,
-              fontSize: 11.5,
-              letterSpacing: 0.5,
-              textTransform: "uppercase",
-              padding: "9px 18px",
-              borderRadius: 20,
-              cursor: "pointer",
-            }}
-          >
-            {tab.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function DeclarationPageBar({
-  dataList,
-  activeIndex,
-  onChange,
-  pageIdentities,
-}) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        gap: 8,
-        margin: "4px 0 16px",
-        flexWrap: "wrap",
-        alignItems: "center",
-      }}
-    >
-      <span
-        style={{
-          color: C.sub,
-          fontWeight: 700,
-          fontSize: 10.5,
-          letterSpacing: 0.4,
-          textTransform: "uppercase",
-          marginRight: 2,
-        }}
-      >
-        {dataList.length} declarations found:
-      </span>
-      {dataList.map((d, i) => {
-        const isActive = i === activeIndex;
-        const fileIndex = d?.FileIndex || d?.fileIndex || i + 1;
-        const consignmentNo = d?.ConsignmentNo || d?.consignmentNo || "";
-        const label = consignmentNo
-          ? `File ${fileIndex} · ${consignmentNo}`
-          : `Declaration ${i + 1}`;
-        const needsNew = !pageIdentities?.[i];
-        return (
-          <button
-            key={i}
-            type="button"
-            onClick={() => onChange(i)}
-            title={
-              needsNew
-                ? "Click New to generate a Permit ID for this declaration"
-                : undefined
-            }
-            style={{
-              border: `1.5px solid ${isActive ? C.bar : needsNew ? C.danger : C.panelBorder}`,
-              background: isActive ? C.bar : "#fff",
-              color: isActive ? "#fff" : needsNew ? C.danger : C.navy,
-              fontWeight: 700,
-              fontSize: 11.5,
-              padding: "6px 14px",
-              borderRadius: 16,
-              cursor: "pointer",
-            }}
-          >
-            {label}
-            {needsNew ? " •" : ""}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function HeaderTabContent({ data, onEdit }) {
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr",
-        gap: "10px 14px",
-      }}
-    >
-      {HEADER_FIELD_SPECS.map((spec) => {
-        const existingKey = findRowKey(data, spec.aliases);
-        const rawValue = existingKey ? data[existingKey] : undefined;
-        const hasRealValue =
-          rawValue !== undefined && rawValue !== null && rawValue !== "";
-        const value = hasRealValue
-          ? rawValue
-          : (spec.default ?? (spec.type === "checkbox" ? false : ""));
-        const writeKey = existingKey || spec.key;
-
-        return (
-          <div key={spec.key} className="decl-field-row">
-            <span
-              className="decl-field-label"
-              style={{
-                display: "block",
-                marginBottom: 6,
-                color: C.navy,
-                fontWeight: 800,
-                fontSize: 12,
-                letterSpacing: 0.2,
-              }}
-            >
-              {spec.label}
-            </span>
-            <span className="decl-field-value">
-              {spec.type === "checkbox" ? (
-                <input
-                  type="checkbox"
-                  checked={!!value}
-                  onChange={(e) => onEdit([writeKey], e.target.checked)}
-                  style={{ width: 16, height: 16, accentColor: C.bar }}
-                />
-              ) : spec.type === "select" ? (
-                <HeaderSelectField
-                  spec={spec}
-                  value={value}
-                  onChange={(v) => onEdit([writeKey], v)}
-                />
-              ) : (
-                <EditableInput
-                  compact
-                  value={value}
-                  onChange={(v) => onEdit([writeKey], v)}
-                />
-              )}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function PartyTabContent({ data, onEdit }) {
-  const receiverName = getNestedCI(data, ["receiver"], ["name"]);
-  const importerRaw = data.Importer;
-  const dataForImporter = {
-    ...data,
-    Importer: importerRaw
-      ? {
-          Code: importerRaw.Code ?? "",
-          CRUEI: importerRaw.CRUEI ?? "",
-          Name: importerRaw.Name ?? "",
-          Name1: importerRaw.Name1 ?? "",
-        }
-      : {
-          Code: receiverName || "",
-          CRUEI: "",
-          Name: receiverName || "",
-          Name1: "",
-        },
-  };
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        border: `1px solid ${C.panelBorder}`,
-        borderRadius: 8,
-        padding: 12,
-        background: "#fafcfd",
-      }}
-    >
-      <MasterPartyField
-        type="importer"
-        data={dataForImporter}
-        onEdit={onEdit}
-      />
-      <MasterPartyField type="inwardCarrierAgent" data={data} onEdit={onEdit} />
-      <MasterPartyField type="freightForwarder" data={data} onEdit={onEdit} />
-      <MasterPartyField type="claimantParty" data={data} onEdit={onEdit} />
-    </div>
-  );
-}
-
-const CARGO_FIELD_SPECS = {
-  totalOuterPack: {
-    key: "TotalOuterPack",
-    label: "Total Outer Pack",
-    aliases: ["totalouterpack", "outerpackqty", "outerpackquantity"],
-    unitAliases: ["totalouterpackunit", "outerpackunit", "totalouterpackuom"],
-    defaultUnit: "PKG",
-  },
-  totalGrossWeight: {
-    key: "TotalGrossWeight",
-    label: "Total Gross Weight",
-    aliases: ["totalgrossweight", "grossweight"],
-    unitAliases: [
-      "totalgrossweightunit",
-      "grossweightunit",
-      "totalgrossweightuom",
-    ],
-    defaultUnit: "KGM",
-  },
-  permitGrossWeight: {
-    key: "PermitGrossWeight",
-    label: "Permit Gross Weight",
-    aliases: ["permitgrossweight"],
-  },
-  releaseLocation: {
-    key: "ReleaseLocation",
-    label: "Release Location",
-    nestedAliases: ["releaselocation"],
-    codeAliases: ["releaselocationcode"],
-    nameAliases: ["releaselocationname"],
-    // Matches the legacy Cargo.jsx behaviour where Release Location comes in
-    // pre-filled with CZ / CHANGI FTZ.
-    defaultCode: "CZ",
-  },
-  receiptLocation: {
-    key: "ReceiptLocation",
-    label: "Receipt Location",
-    nestedAliases: ["receiptlocation"],
-    codeAliases: ["receiptlocationcode"],
-    nameAliases: ["receiptlocationname"],
-    defaultCode: "O",
-    // TODO: confirm the correct default code for Receipt Location with Ed —
-    // set it here (e.g. defaultCode: "OTHERS") once confirmed, the same way
-    // releaseLocation.defaultCode is set above.
-  },
-  loadingPort: {
-    key: "LoadingPort",
-    label: "Loading Port",
-    nestedAliases: ["loadingport"],
-    codeAliases: ["loadingportcode"],
-    nameAliases: ["loadingportname"],
-  },
-  hawb: {
-    key: "Hawb",
-    label: "HAWB",
-    aliases: ["hawb"],
-  },
-  arrivalDate: {
-    key: "ArrivalDate",
-    label: "Arrival Date",
-    aliases: ["arrivaldate"],
-  },
-  flightNumber: {
-    key: "FlightNumber",
-    label: "Flight Number",
-    aliases: ["flightnumber", "flightno"],
-  },
-  aircraftRegNo: {
-    key: "AircraftRegNo",
-    label: "Aircraft Reg No",
-    aliases: ["aircraftregno", "aircraftregistrationno"],
-  },
-  mawb: {
-    key: "Mawb",
-    label: "MAWB",
-    aliases: ["mawb"],
-  },
-  blanketStartDate: {
-    key: "BlanketStartDate",
-    label: "Blanket Start Date",
-    aliases: ["blanketstartdate"],
-  },
-};
-
-function cargoGetScalar(data, aliases, covered) {
-  const key = findRowKey(data, aliases);
-  if (key && covered) covered.add(normalizeKey(key));
-  return key ? data[key] : "";
-}
-
-function cargoScalarPath(data, aliases, fallbackKey) {
-  const key = findRowKey(data, aliases);
-  return [key || fallbackKey];
-}
-
-// Reads a value+unit pair (Total Outer Pack, Total Gross Weight).
-function cargoGetWeightPair(data, spec, covered) {
-  const valueKey = findRowKey(data, spec.aliases);
-  const unitKey = findRowKey(data, spec.unitAliases);
-  if (valueKey && covered) covered.add(normalizeKey(valueKey));
-  if (unitKey && covered) covered.add(normalizeKey(unitKey));
-  return {
-    value: valueKey ? data[valueKey] : "",
-    unit: unitKey ? data[unitKey] : spec.defaultUnit,
-    valuePath: [valueKey || spec.key],
-    unitPath: [unitKey || `${spec.key}Unit`],
-  };
-}
-
-function cargoGetLocation(data, spec, covered) {
-  const nestedKey = findRowKey(data, spec.nestedAliases);
-  if (nestedKey && isPlainObject(data[nestedKey])) {
-    if (covered) covered.add(normalizeKey(nestedKey));
-    const obj = data[nestedKey];
-    const codeKey = findRowKey(obj, ["code"]);
-    const nameKey = findRowKey(obj, ["name"]);
-    return {
-      code: codeKey ? obj[codeKey] : "",
-      name: nameKey ? obj[nameKey] : "",
-      codePath: [nestedKey, codeKey || "Code"],
-      namePath: [nestedKey, nameKey || "Name"],
-    };
-  }
-
-  const flatCodeKey = findRowKey(data, spec.codeAliases);
-  const flatNameKey = findRowKey(data, spec.nameAliases);
-  if (flatCodeKey || flatNameKey) {
-    if (flatCodeKey && covered) covered.add(normalizeKey(flatCodeKey));
-    if (flatNameKey && covered) covered.add(normalizeKey(flatNameKey));
-    return {
-      code: flatCodeKey ? data[flatCodeKey] : "",
-      name: flatNameKey ? data[flatNameKey] : "",
-      codePath: [flatCodeKey || `${spec.key}Code`],
-      namePath: [flatNameKey || `${spec.key}Name`],
-    };
-  }
-
-  return {
-    code: "",
-    name: "",
-    codePath: [spec.key, "Code"],
-    namePath: [spec.key, "Name"],
-  };
-}
-
-function CargoSectionCard({ title, children }) {
-  return (
-    <div
-      style={{
-        border: "1px solid #c2d7e8",
-        borderRadius: 5,
-        padding: 8,
-        background: "#fafcfd",
-        minWidth: 0,
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          background: "#0f3c52",
-          color: "#eaf3f9",
-          fontWeight: 700,
-          fontSize: 11,
-          letterSpacing: 0.4,
-          textTransform: "uppercase",
-          textAlign: "center",
-          padding: "7px 0",
-          borderRadius: 4,
-          marginBottom: 10,
-        }}
-      >
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function CargoTextRow({ label, value, onChange, disabled }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 6,
-        marginBottom: 6,
-        minWidth: 0,
-      }}
-    >
-      <span
-        style={{
-          width: 62,
-          flexShrink: 0,
-          fontSize: 11,
-          fontWeight: 600,
-          lineHeight: 1.2,
-          color: "#2A3D4F",
-          whiteSpace: "normal",
-          wordBreak: "normal",
-          overflowWrap: "break-word",
-          paddingTop: 4,
-        }}
-      >
-        {label}
-      </span>
-      <input
-        type="text"
-        value={value ?? ""}
-        onChange={(e) => onChange && onChange(e.target.value.toUpperCase())}
-        disabled={disabled}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          padding: "4px 6px",
-          border: disabled ? "1px solid #8FA5B5" : "1px solid #C3C1B5",
-          borderRadius: 4,
-          fontFamily: "monospace",
-          fontSize: 11.5,
-          fontWeight: disabled ? 700 : 400,
-          color: disabled ? "#0b2f3f" : "#12202E",
-          background: disabled ? "#e9eef2" : "#fff",
-          boxSizing: "border-box",
-        }}
-      />
-    </div>
-  );
-}
-
-function CargoWeightRow({
-  label,
-  value,
-  unit,
-  unitOptions,
-  onValueChange,
-  onUnitChange,
-}) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 6,
-        marginBottom: 6,
-        minWidth: 0,
-      }}
-    >
-      <span
-        style={{
-          width: 62,
-          flexShrink: 0,
-          fontSize: 11,
-          fontWeight: 600,
-          lineHeight: 1.2,
-          color: "#2A3D4F",
-          whiteSpace: "normal",
-          wordBreak: "normal",
-          overflowWrap: "break-word",
-          paddingTop: 4,
-        }}
-      >
-        {label}
-      </span>
-      <input
-        type="text"
-        value={value ?? ""}
-        onChange={(e) => onValueChange(e.target.value)}
-        style={{
-          flex: "0 0 50px",
-          minWidth: 0,
-          padding: "4px 6px",
-          border: "1px solid #8FA5B5",
-          borderRadius: 4,
-          fontFamily: "monospace",
-          fontSize: 11.5,
-          fontWeight: 600,
-          color: "#12202E",
-          background: "#fff",
-          boxSizing: "border-box",
-        }}
-      />
-      <select
-        value={unit || ""}
-        onChange={(e) => onUnitChange(e.target.value)}
-        style={{
-          flex: "0 0 58px",
-          minWidth: 0,
-          padding: "3px 4px",
-          border: "1px solid #8FA5B5",
-          borderRadius: 4,
-          fontFamily: "monospace",
-          fontSize: 10.5,
-          fontWeight: 600,
-          color: "#0b2f3f",
-          background: "#fff",
-        }}
-      >
-        <option value="">--Select--</option>
-        {unit && unitOptions && !unitOptions.includes(unit) && (
-          <option value={unit}>{unit}</option>
-        )}
-        {(unitOptions || []).map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-// Date field with the same focus-out behavior as the legacy Cargo.jsx
-// (useCargoDate in cargoFunctions.js): typing raw digits (e.g. "27082026")
-// auto-formats to DD/MM/YYYY on blur; an invalid date reverts to today;
-// pressing Space fills in today's date.
-function CargoDateField({ label, value, onChange }) {
-  const [error, setError] = useState(false);
-
-  const getTodayDate = () => {
-    const today = new Date();
-    const day = String(today.getDate()).padStart(2, "0");
-    const month = String(today.getMonth() + 1).padStart(2, "0");
-    const year = today.getFullYear();
-    return `${day}/${month}/${year}`;
-  };
-
-  const handleBlur = () => {
-    if (!value || value.trim() === "") {
-      setError(false);
-      return;
-    }
-    const raw = value.replace(/\D/g, "");
-
-    if (raw.length === 8) {
-      const dd = raw.slice(0, 2);
-      const mm = raw.slice(2, 4);
-      const yyyy = raw.slice(4, 8);
-      if (
-        parseInt(dd, 10) >= 1 &&
-        parseInt(dd, 10) <= 31 &&
-        parseInt(mm, 10) >= 1 &&
-        parseInt(mm, 10) <= 12
-      ) {
-        onChange(`${dd}/${mm}/${yyyy}`);
-        setError(false);
-      } else {
-        onChange(getTodayDate());
-        setError(true);
-      }
-    } else if (value.length === 10 && value.includes("/")) {
-      setError(false);
-    } else {
-      onChange(getTodayDate());
-      setError(false);
-    }
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === " " || e.keyCode === 32) {
-      e.preventDefault();
-      onChange(getTodayDate());
-    }
-  };
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 6,
-        marginBottom: 6,
-        minWidth: 0,
-      }}
-    >
-      <span
-        style={{
-          width: 62,
-          flexShrink: 0,
-          fontSize: 11,
-          fontWeight: 600,
-          lineHeight: 1.2,
-          color: "#2A3D4F",
-          whiteSpace: "normal",
-          wordBreak: "normal",
-          overflowWrap: "break-word",
-          paddingTop: 4,
-        }}
-      >
-        {label}
-      </span>
-      <input
-        type="text"
-        value={value ?? ""}
-        placeholder="DD/MM/YYYY"
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={handleBlur}
-        onKeyDown={handleKeyDown}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          padding: "4px 6px",
-          border: error ? "1px solid #c0392b" : "1px solid #C3C1B5",
-          borderRadius: 4,
-          fontFamily: "monospace",
-          fontSize: 11.5,
-          color: "#12202E",
-          background: "#fff",
-          boxSizing: "border-box",
-        }}
-      />
-      {error && (
-        <span
-          style={{
-            color: "#c0392b",
-            fontSize: 10,
-            fontWeight: 700,
-            alignSelf: "center",
-          }}
-        >
-          Invalid date — reset to today
-        </span>
-      )}
-    </div>
-  );
-}
-
-function CargoTabContent({ data, onEdit }) {
-  const covered = new Set();
-
-  // Master options — same endpoints as original Cargo.jsx
-  const outerPackUnitOptions = useMasterOptions(
-    "/getTotalOuterPackFromCommonMaster/",
-  );
-  const grossWeightUnitOptions = ["KGM", "TNE"];
-
-  const totalOuterPack = cargoGetWeightPair(
-    data,
-    CARGO_FIELD_SPECS.totalOuterPack,
-    covered,
-  );
-
-  const totalWeightKey = findRowKey(data, ["totalweight"]);
-  const totalWeightFallback = totalWeightKey ? data[totalWeightKey] : "";
-  const totalGrossWeightRaw = cargoGetWeightPair(
-    data,
-    CARGO_FIELD_SPECS.totalGrossWeight,
-    covered,
-  );
-  const totalGrossWeightKeyExists = !!findRowKey(
-    data,
-    CARGO_FIELD_SPECS.totalGrossWeight.aliases,
-  );
-
-  const totalGrossWeight = {
-    ...totalGrossWeightRaw,
-    value: totalGrossWeightKeyExists
-      ? totalGrossWeightRaw.value
-      : totalWeightFallback || "",
-  };
-
-  const permitGrossWeight = cargoGetScalar(
-    data,
-    CARGO_FIELD_SPECS.permitGrossWeight.aliases,
-    covered,
-  );
-
-  const releaseLocation = cargoGetLocation(
-    data,
-    CARGO_FIELD_SPECS.releaseLocation,
-    covered,
-  );
-  const receiptLocation = cargoGetLocation(
-    data,
-    CARGO_FIELD_SPECS.receiptLocation,
-    covered,
-  );
-
-  const consignmentNoKey = findRowKey(data, ["consignmentno"]);
-  const consignmentNo = consignmentNoKey ? data[consignmentNoKey] : "";
-  const hawbRaw = cargoGetScalar(data, CARGO_FIELD_SPECS.hawb.aliases, covered);
-
-  const hawbKeyExists = !!findRowKey(data, CARGO_FIELD_SPECS.hawb.aliases);
-  const hawb = hawbKeyExists ? hawbRaw : consignmentNo || "";
-
-  const headerModeSpec = HEADER_FIELD_SPECS.find(
-    (s) => s.key === "InwardTransportMode",
-  );
-  const headerModeKey =
-    findRowKey(data, headerModeSpec.aliases) || headerModeSpec.key;
-  const mode = data[headerModeKey] || "";
-  covered.add(normalizeKey(headerModeKey));
-  // ─────────────────────────────────────────────────────────────────────
-
-  const loadingPort = cargoGetLocation(
-    data,
-    CARGO_FIELD_SPECS.loadingPort,
-    covered,
-  );
-  // const hawb = cargoGetScalar(data, CARGO_FIELD_SPECS.hawb.aliases, covered);
-  const arrivalDate = cargoGetScalar(
-    data,
-    CARGO_FIELD_SPECS.arrivalDate.aliases,
-    covered,
-  );
-  const flightNumber = cargoGetScalar(
-    data,
-    CARGO_FIELD_SPECS.flightNumber.aliases,
-    covered,
-  );
-  const aircraftRegNo = cargoGetScalar(
-    data,
-    CARGO_FIELD_SPECS.aircraftRegNo.aliases,
-    covered,
-  );
-  const mawb = cargoGetScalar(data, CARGO_FIELD_SPECS.mawb.aliases, covered);
-  const blanketStartDate = cargoGetScalar(
-    data,
-    CARGO_FIELD_SPECS.blanketStartDate.aliases,
-    covered,
-  );
-
-  // ── PERMIT GROSS WEIGHT CALCULATION (mirrors Cargo.jsx useEffect) ──────
-  const permitWeightPath = cargoScalarPath(
-    data,
-    CARGO_FIELD_SPECS.permitGrossWeight.aliases,
-    CARGO_FIELD_SPECS.permitGrossWeight.key,
-  );
-
-  useEffect(() => {
-    const raw = totalGrossWeight.value;
-    const uom = totalGrossWeight.unit;
-    if (!raw || !uom || uom === "--Select--") {
-      onEdit(permitWeightPath, "");
-      return;
-    }
-    const weight = Number(raw);
-    if (isNaN(weight)) {
-      onEdit(permitWeightPath, "");
-      return;
-    }
-    const computed = uom === "TNE" ? weight / 1000 : weight;
-    onEdit(permitWeightPath, String(computed));
-  }, [totalGrossWeight.value, totalGrossWeight.unit]);
-
-  const isSeaMode = /sea/i.test(mode || "");
-  const seaUnitMismatch =
-    isSeaMode && totalGrossWeight.unit && totalGrossWeight.unit !== "TNE";
-
-  // ─────────────────────────────────────────────────────────────────────
-
-  return (
-    <div
-      style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}
-    >
-      <div className="cargo-grid-2col">
-        <CargoSectionCard title="OUTER PACK DETAILS">
-          <CargoWeightRow
-            label="Total Outer Pack"
-            value={totalOuterPack.value}
-            unit={totalOuterPack.unit}
-            unitOptions={outerPackUnitOptions}
-            onValueChange={(v) => onEdit(totalOuterPack.valuePath, v)}
-            onUnitChange={(v) => onEdit(totalOuterPack.unitPath, v)}
-          />
-          <CargoWeightRow
-            label="Total Gross Weight"
-            value={totalGrossWeight.value}
-            unit={totalGrossWeight.unit}
-            unitOptions={grossWeightUnitOptions}
-            onValueChange={(v) => onEdit(totalGrossWeight.valuePath, v)}
-            onUnitChange={(v) => onEdit(totalGrossWeight.unitPath, v)}
-          />
-          {seaUnitMismatch && (
-            <div
-              style={{
-                color: "#c0392b",
-                fontSize: 10,
-                fontWeight: 700,
-                marginTop: -2,
-                marginBottom: 6,
-              }}
-            >
-              Sea mode requires Gross Weight unit = TNE
-            </div>
-          )}
-          <CargoTextRow
-            label="Permit Gross Weight"
-            value={permitGrossWeight}
-            onChange={(v) => onEdit(permitWeightPath, v)}
-          />
-        </CargoSectionCard>
-
-        <CargoSectionCard title="LOCATION INFORMATION">
-          <LocationSuggestField
-            label="Release Location"
-            endpoint="/getReleaseLocation/"
-            codeKey="Code"
-            nameKey="Description"
-            extraKey="LocationCode"
-            code={releaseLocation.code}
-            name={releaseLocation.name}
-            onCodeChange={(v) => onEdit(releaseLocation.codePath, v)}
-            onNameChange={(v) => onEdit(releaseLocation.namePath, v)}
-            defaultCode={CARGO_FIELD_SPECS.releaseLocation.defaultCode}
-          />
-          <LocationSuggestField
-            label="Receipt Location"
-            endpoint="/getReceiptLocation/"
-            codeKey="Code"
-            nameKey="Description"
-            extraKey="LocationCode"
-            code={receiptLocation.code}
-            name={receiptLocation.name}
-            onCodeChange={(v) => onEdit(receiptLocation.codePath, v)}
-            onNameChange={(v) => onEdit(receiptLocation.namePath, v)}
-            defaultCode={CARGO_FIELD_SPECS.receiptLocation.defaultCode}
-          />
-        </CargoSectionCard>
-      </div>
-
-      <CargoSectionCard title="INWARD DETAILS">
-        <CargoTextRow
-          label="Mode"
-          value={mode}
-          onChange={(v) => onEdit([headerModeKey], v)}
-        />
-        <LocationSuggestField
-          label="Loading Port"
-          endpoint="/getLoadingPort/"
-          codeKey="PortCode"
-          nameKey="PortName"
-          extraKey="Country"
-          code={loadingPort.code}
-          name={loadingPort.name}
-          onCodeChange={(v) => onEdit(loadingPort.codePath, v)}
-          onNameChange={(v) => onEdit(loadingPort.namePath, v)}
-        />
-        <CargoTextRow
-          label="HAWB"
-          value={hawb}
-          onChange={(v) =>
-            onEdit(
-              cargoScalarPath(
-                data,
-                CARGO_FIELD_SPECS.hawb.aliases,
-                CARGO_FIELD_SPECS.hawb.key,
-              ),
-              v,
-            )
-          }
-        />
-        <CargoDateField
-          label="Arrival Date"
-          value={arrivalDate}
-          onChange={(v) =>
-            onEdit(
-              cargoScalarPath(
-                data,
-                CARGO_FIELD_SPECS.arrivalDate.aliases,
-                CARGO_FIELD_SPECS.arrivalDate.key,
-              ),
-              v,
-            )
-          }
-        />
-        <CargoTextRow
-          label="Flight Number"
-          value={flightNumber}
-          onChange={(v) =>
-            onEdit(
-              cargoScalarPath(
-                data,
-                CARGO_FIELD_SPECS.flightNumber.aliases,
-                CARGO_FIELD_SPECS.flightNumber.key,
-              ),
-              v,
-            )
-          }
-        />
-        <CargoTextRow
-          label="Aircraft Reg No"
-          value={aircraftRegNo}
-          onChange={(v) =>
-            onEdit(
-              cargoScalarPath(
-                data,
-                CARGO_FIELD_SPECS.aircraftRegNo.aliases,
-                CARGO_FIELD_SPECS.aircraftRegNo.key,
-              ),
-              v,
-            )
-          }
-        />
-        <CargoTextRow
-          label="MAWB"
-          value={mawb}
-          onChange={(v) =>
-            onEdit(
-              cargoScalarPath(
-                data,
-                CARGO_FIELD_SPECS.mawb.aliases,
-                CARGO_FIELD_SPECS.mawb.key,
-              ),
-              v,
-            )
-          }
-        />
-        <CargoDateField
-          label="Blanket Start Date"
-          value={blanketStartDate}
-          onChange={(v) =>
-            onEdit(
-              cargoScalarPath(
-                data,
-                CARGO_FIELD_SPECS.blanketStartDate.aliases,
-                CARGO_FIELD_SPECS.blanketStartDate.key,
-              ),
-              v,
-            )
-          }
-        />
-      </CargoSectionCard>
-      {/* 
-      Leftover fields (FileIndex, InvoiceIndex, Format, ConsignmentNo, NoOfParcels,
-          TotalWeight, TotalValueGBP) hidden for now — design pass only. */}
-      {/* {leftoverEntries.length > 0 &&
-        renderGroupedEntries(leftoverEntries, [], onEdit, {
-          labelStyle: {
-            color: C.navy,
-            fontWeight: 800,
-            fontSize: 12,
-            letterSpacing: 0.2,
-          },
-          renderComplex: (key, value) => (
-            <div
-              key={key}
-              className="decl-field-row"
-              style={{ marginBottom: 14 }}
-            >
-              <span
-                className="decl-field-label"
-                style={{
-                  color: C.navy,
-                  fontWeight: 800,
-                  fontSize: 12,
-                  letterSpacing: 0.2,
-                }}
-              >
-                {formatLabel(key)}
-              </span>
-              <span
-                className="decl-field-value"
-                style={{ display: "block", marginTop: 6 }}
-              >
-                <EditableValue value={value} path={[key]} onEdit={onEdit} />
-              </span>
-            </div>
-          ),
-        })} */}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Invoice tab — invoice list table (mirrors the legacy Invoice.jsx
-// "INVOICE TABLE": S.No, Invoice Number, Invoice Date, Term Type, Currency,
-// Amount, CIF/FOB ($), GST ($), with per-row Edit/Delete).
-// ---------------------------------------------------------------------------
-
-function InvoiceTableSection({ invoices, onEditRow, onDeleteRow }) {
+function ItemsTableSection({ items, onEditRow, onDeleteRow, deletingItemNo }) {
   const columns = [
     "Delete",
     "Edit",
-    "S.No",
-    "Invoice Number",
-    "Invoice Date",
-    "Term Type",
+    "Item No",
+    "HS Code",
+    "Description",
+    "COO",
+    "HAWB",
     "Currency",
-    "Amount",
     "CIF/FOB ($)",
+    "HS Qty",
+    "HS UOM",
     "GST ($)",
+    "Line Amount",
   ];
-
   return (
-    <div style={{ marginTop: 8 }}>
+    <div style={{ marginTop: 16 }}>
       <div
         style={{
           background: C.bar,
@@ -3913,15 +2820,11 @@ function InvoiceTableSection({ invoices, onEditRow, onDeleteRow }) {
           marginBottom: 10,
         }}
       >
-        INVOICE TABLE
+        ITEM TABLE
       </div>
       <div style={{ overflowX: "auto" }}>
         <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: 12.5,
-          }}
+          style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}
         >
           <thead>
             <tr>
@@ -3943,7 +2846,7 @@ function InvoiceTableSection({ invoices, onEditRow, onDeleteRow }) {
             </tr>
           </thead>
           <tbody>
-            {invoices.length === 0 ? (
+            {items.length === 0 ? (
               <tr>
                 <td
                   colSpan={columns.length}
@@ -3954,131 +2857,18 @@ function InvoiceTableSection({ invoices, onEditRow, onDeleteRow }) {
                     fontSize: 12.5,
                   }}
                 >
-                  No invoices added yet.
+                  No items added yet.
                 </td>
               </tr>
             ) : (
-              invoices.map((inv, i) => (
-                <tr
-                  key={inv.sNo ?? i}
-                  style={{ background: i % 2 ? C.rowAlt : "#fff" }}
-                >
-                  <td
-                    style={{
-                      padding: 6,
-                      borderBottom: `1px solid ${C.panelBorder}`,
-                      textAlign: "center",
-                    }}
-                  >
-                    <RemoveBtn
-                      onClick={() => onDeleteRow(inv.sNo)}
-                      title="Delete invoice"
-                    />
-                  </td>
-                  <td
-                    style={{
-                      padding: 6,
-                      borderBottom: `1px solid ${C.panelBorder}`,
-                      textAlign: "center",
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => onEditRow(inv.sNo)}
-                      title="Edit invoice"
-                      style={{
-                        border: "none",
-                        background: "transparent",
-                        color: C.bar,
-                        cursor: "pointer",
-                        fontWeight: 800,
-                        fontSize: 14,
-                      }}
-                    >
-                      ✎
-                    </button>
-                  </td>
-                  <td
-                    style={{
-                      padding: "7px 9px",
-                      borderBottom: `1px solid ${C.panelBorder}`,
-                      fontSize: 12,
-                      color: C.navy,
-                    }}
-                  >
-                    {inv.sNo}
-                  </td>
-                  <td
-                    style={{
-                      padding: "7px 9px",
-                      borderBottom: `1px solid ${C.panelBorder}`,
-                      fontSize: 12,
-                      color: C.navy,
-                    }}
-                  >
-                    {inv.invoiceNumber || "—"}
-                  </td>
-                  <td
-                    style={{
-                      padding: "7px 9px",
-                      borderBottom: `1px solid ${C.panelBorder}`,
-                      fontSize: 12,
-                      color: C.navy,
-                    }}
-                  >
-                    {inv.invoiceDate || "—"}
-                  </td>
-                  <td
-                    style={{
-                      padding: "7px 9px",
-                      borderBottom: `1px solid ${C.panelBorder}`,
-                      fontSize: 12,
-                      color: C.navy,
-                    }}
-                  >
-                    {inv.termType || "—"}
-                  </td>
-                  <td
-                    style={{
-                      padding: "7px 9px",
-                      borderBottom: `1px solid ${C.panelBorder}`,
-                      fontSize: 12,
-                      color: C.navy,
-                    }}
-                  >
-                    {inv.invoiceValue?.currency || "—"}
-                  </td>
-                  <td
-                    style={{
-                      padding: "7px 9px",
-                      borderBottom: `1px solid ${C.panelBorder}`,
-                      fontSize: 12,
-                      color: C.navy,
-                    }}
-                  >
-                    {inv.invoiceValue?.amount || "—"}
-                  </td>
-                  <td
-                    style={{
-                      padding: "7px 9px",
-                      borderBottom: `1px solid ${C.panelBorder}`,
-                      fontSize: 12,
-                      color: C.navy,
-                    }}
-                  >
-                    {inv.costInsuranceFreight?.amountSgd || "—"}
-                  </td>
-                  <td
-                    style={{
-                      padding: "7px 9px",
-                      borderBottom: `1px solid ${C.panelBorder}`,
-                      fontSize: 12,
-                      color: C.navy,
-                    }}
-                  >
-                    {inv.gst?.amountSgd || "—"}
-                  </td>
-                </tr>
+              items.map((item) => (
+                <ItemsTableRow
+                  key={item.ItemNo}
+                  item={item}
+                  onEdit={() => onEditRow(item.ItemNo)}
+                  onDelete={() => onDeleteRow(item.ItemNo)}
+                  deleting={deletingItemNo === item.ItemNo}
+                />
               ))
             )}
           </tbody>
@@ -4088,1158 +2878,336 @@ function InvoiceTableSection({ invoices, onEditRow, onDeleteRow }) {
   );
 }
 
-function formatDateForApi(dateStr) {
-  if (!dateStr) return null;
-  const parts = String(dateStr).split("/");
-  if (parts.length !== 3) return null;
-  const [day, month, year] = parts;
-  return `${year}-${month}-${day}`;
+function hasSavedItemNo(raw) {
+  if (!raw || typeof raw !== "object") return false;
+  for (const k of Object.keys(raw)) {
+    const norm = k.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (norm === "itemno" && raw[k] !== "" && raw[k] != null) {
+      return true;
+    }
+  }
+  return false;
 }
 
-function buildInvoicePayload(invoice, importer, sNo, permitId) {
-  const visibility = getTermTypeVisibility(invoice.termType);
-  const showFreight = visibility.showFreight;
-  const showInsurance = visibility.showInsurance;
+export default function ItemsTabContent({ data, onEdit, permitId, user }) {
+  const rawItems = Array.isArray(data.items) ? data.items : [];
+  const cargoHawbList = parseHawbList(data.Hawb);
 
-  return {
-    PermitId: permitId,
-    SNo: sNo,
-    InvoiceNo: (invoice.invoiceNumber || "").toUpperCase(),
-    InvoiceDate: formatDateForApi(invoice.invoiceDate),
-    TermType: invoice.termType || "",
-    AdValoremIndicator: "False",
-    PreDutyRateIndicator: invoice.preferentialDutyRateIndicator
-      ? "True"
-      : "False",
-    SupplierImporterRelationship:
-      invoice.supplierImporterRelationship || "--Select--",
-    SupplierCode: invoice.supplier?.code || "-",
-    ImportPartyCode: importer?.Code || "",
+  const hsCodeSuggestions = useHsCodeSuggestions();
 
-    TICurrency: invoice.invoiceValue.currency || "",
-    TIExRate: Number(invoice.invoiceValue.exRate) || 0,
-    TIAmount: Number(invoice.invoiceValue.amount) || 0,
-    TISAmount: Number(invoice.invoiceValue.amountSgd) || 0,
+  const savedRawItems = rawItems.filter(hasSavedItemNo);
+  const unsavedRawItems = rawItems.filter((i) => !hasSavedItemNo(i));
 
-    OTCCharge: Number(invoice.otherValue.charges) || 0,
-    OTCCurrency: invoice.otherValue.currency || "--Select--",
-    OTCExRate: Number(invoice.otherValue.exRate) || 0,
-    OTCAmount: Number(invoice.otherValue.amount) || 0,
-    OTCSAmount: Number(invoice.otherValue.amountSgd) || 0,
+  const normalizedItems = savedRawItems.map(normalizeIncomingItem);
 
-    FCCharge: showFreight ? Number(invoice.freightValue.charges) || 0 : 0,
-    FCCurrency: showFreight
-      ? invoice.freightValue.currency || "--Select--"
-      : "--Select--",
-    FCExRate: showFreight ? Number(invoice.freightValue.exRate) || 0 : 0,
-    FCAmount: showFreight ? Number(invoice.freightValue.amount) || 0 : 0,
-    FCSAmount: showFreight ? Number(invoice.freightValue.amountSgd) || 0 : 0,
-
-    ICCharge: showInsurance ? Number(invoice.insuranceValue.charges) || 0 : 0,
-    ICCurrency: showInsurance
-      ? invoice.insuranceValue.currency || "--Select--"
-      : "--Select--",
-    ICExRate: showInsurance ? Number(invoice.insuranceValue.exRate) || 0 : 0,
-    ICAmount: showInsurance ? Number(invoice.insuranceValue.amount) || 0 : 0,
-    ICSAmount: showInsurance
-      ? Number(invoice.insuranceValue.amountSgd) || 0
-      : 0,
-
-    CIFSUMAmount: Number(invoice.costInsuranceFreight.amountSgd) || 0,
-    GSTPercentage: Number(invoice.gst.charges) || 0,
-    GSTSUMAmount: Number(invoice.gst.amountSgd) || 0,
-    MessageType: "IPTDEC",
-    TouchUser: DEFAULT_TOUCH_USER,
-    TouchTime: new Date().toISOString(),
-    ChkOtherInv: "No",
-  };
-}
-
-// function InvoiceTabContent({ data, onEdit, permitId }) {
-//   const invoices = Array.isArray(data.invoices) ? data.invoices : [];
-//   const [savingInvoice, setSavingInvoice] = useState(false);
-
-//   const handleAddInvoice = async () => {
-//     if (!permitId) {
-//       alert(
-//         'Click "New" first to generate a Permit ID before adding an invoice.',
-//       );
-//       return;
-//     }
-
-//     const current = { ...blankInvoice(), ...(data.invoice || {}) };
-
-//     if (!current.invoiceNumber || !current.invoiceNumber.trim()) {
-//       alert("Invoice Number is required!");
-//       return;
-//     }
-//     if (!current.invoiceDate || !current.invoiceDate.trim()) {
-//       alert("Invoice Date is required!");
-//       return;
-//     }
-
-//     const nextSNo =
-//       invoices.length > 0
-//         ? Math.max(...invoices.map((inv) => Number(inv.sNo) || 0)) + 1
-//         : 1;
-
-//     const rowToSave = { ...current, sNo: nextSNo };
-//     const payload = buildInvoicePayload(
-//       rowToSave,
-//       data.Importer,
-//       nextSNo,
-//       permitId,
-//     );
-
-//     setSavingInvoice(true);
-//     try {
-//       await API.post("/postInvoiceTable/", payload);
-//       onEdit(["invoices"], [...invoices, rowToSave]);
-//       onEdit(["invoice"], blankInvoice());
-//     } catch (err) {
-//       console.error("Failed to save invoice:", err.response?.data || err);
-//       alert(
-//         err.response?.data?.error ||
-//           "Failed to save invoice. Please try again.",
-//       );
-//     } finally {
-//       setSavingInvoice(false);
-//     }
-//   };
-
-//   const handleEditRow = (sNo) => {
-//     const row = invoices.find((inv) => inv.sNo === sNo);
-//     if (!row) return;
-//     onEdit(["invoice"], row);
-//     onEdit(
-//       ["invoices"],
-//       invoices.filter((inv) => inv.sNo !== sNo),
-//     );
-//   };
-
-//   const handleDeleteRow = (sNo) => {
-//     onEdit(
-//       ["invoices"],
-//       invoices.filter((inv) => inv.sNo !== sNo),
-//     );
-//   };
-
-//   return (
-//     <div>
-//       <InvoicePartiesBlock data={data} onEdit={onEdit} />
-//       <InvoiceDetailsBlock data={data} onEdit={onEdit} />
-
-//       <div
-//         style={{
-//           display: "flex",
-//           justifyContent: "flex-end",
-//           marginBottom: 18,
-//         }}
-//       >
-//         <button
-//           type="button"
-//           onClick={handleAddInvoice}
-//           disabled={savingInvoice}
-//           style={{
-//             border: `1.5px dashed ${C.bar}`,
-//             background: "transparent",
-//             color: C.bar,
-//             fontWeight: 700,
-//             fontSize: 12,
-//             padding: "6px 12px",
-//             borderRadius: 6,
-//             cursor: savingInvoice ? "not-allowed" : "pointer",
-//             opacity: savingInvoice ? 0.6 : 1,
-//           }}
-//         >
-//           {savingInvoice ? "Saving…" : "+ Add Invoice"}
-//         </button>
-//       </div>
-
-//       <InvoiceTableSection
-//         invoices={invoices}
-//         onEditRow={handleEditRow}
-//         onDeleteRow={handleDeleteRow}
-//       />
-//     </div>
-//   );
-// }
-
-function SummaryField({ label, value }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <span
-        style={{
-          color: C.sub,
-          fontWeight: 700,
-          fontSize: 10.5,
-          letterSpacing: 0.3,
-        }}
-      >
-        {label}
-      </span>
-      <span style={{ color: C.navy, fontWeight: 600, fontSize: 13 }}>
-        {value === "" || value == null ? "—" : String(value)}
-      </span>
-    </div>
+  // selection: which badge is currently loaded into the draft form.
+  // { type: "saved", itemNo }  -> editing an already-saved item
+  // { type: "pending", index } -> previewing/editing an unsaved n8n item
+  // { type: "blank" }          -> fresh "New Item" form
+  const [selection, setSelection] = useState(() =>
+    unsavedRawItems.length > 0
+      ? { type: "pending", index: 0 }
+      : { type: "blank" },
   );
-}
 
-function SummaryCard({ title, children }) {
-  return (
-    <div
-      style={{
-        border: `1px solid ${C.panelBorder}`,
-        borderRadius: 8,
-        padding: 14,
-        marginBottom: 16,
-        background: "#fafcfd",
-      }}
-    >
-      <span
-        style={{
-          color: C.navy,
-          fontWeight: 800,
-          fontSize: 13,
-          display: "block",
-          marginBottom: 12,
-        }}
-      >
-        {title}
-      </span>
-      {children}
-    </div>
-  );
-}
+  const [deletingItemNo, setDeletingItemNo] = useState(null);
+  const [invoiceNumbers, setInvoiceNumbers] = useState([]);
 
-function SummaryInputBox({ label, value, onChange, readOnly, wide }) {
-  return (
-    <div style={{ gridColumn: wide ? "span 2" : "span 1", minWidth: 0 }}>
-      <div
-        style={{
-          fontSize: 10,
-          fontWeight: 700,
-          color: C.navy,
-          marginBottom: 3,
-          letterSpacing: 0.2,
-        }}
-      >
-        {label}
-      </div>
-      <input
-        type="text"
-        value={value ?? ""}
-        readOnly={readOnly}
-        onChange={(e) => onChange && onChange(e.target.value)}
-        style={{
-          width: "100%",
-          boxSizing: "border-box",
-          padding: "4px 6px",
-          fontSize: 11,
-          border: `1px solid ${C.inputBorder}`,
-          borderRadius: 3,
-          background: readOnly ? "#eef2f5" : "#fff",
-          color: C.navy,
-        }}
-      />
-    </div>
-  );
-}
+  useEffect(() => {
+    if (!permitId) {
+      setInvoiceNumbers([]);
+      return;
+    }
+    const fetchInvoices = async () => {
+      const response = await API.get(`/getInvoiceByPermitId/${permitId}/`);
+      setInvoiceNumbers(response.data || []);
+    };
+    fetchInvoices();
+  }, [permitId]);
 
-function money(val) {
-  const num = Number(val);
-  return isNaN(num) ? "0.00" : num.toFixed(2);
-}
+  const nextItemNo =
+    normalizedItems.length > 0
+      ? Math.max(...normalizedItems.map((i) => Number(i.ItemNo) || 0)) + 1
+      : 1;
 
-function SummaryTabContent({ data, onEdit }) {
-  const items = Array.isArray(data.items) ? data.items : [];
-  const invoices = Array.isArray(data.invoices) ? data.invoices : [];
-  const importer = data.Importer || { Code: "", Name: "" };
+  const editingItemNo = selection.type === "saved" ? selection.itemNo : null;
 
-  const totalSpec = ITEM_FIELD_SPECS.find((s) => s.key === "totalValue");
-  const toNum = (v) => {
-    const n = parseFloat(v);
-    return isNaN(n) ? 0 : n;
-  };
+  // Number shown in the badge / "New Item N" label for the pending draft.
+  const pendingBadgeNo =
+    selection.type === "pending" ? nextItemNo + selection.index : null;
 
-  const sumItemValue = items.reduce(
-    (sum, row) => sum + toNum(row[findRowKey(row, totalSpec.aliases)]),
-    0,
-  );
-  const totalInvoiceCif = invoices.reduce(
-    (sum, inv) => sum + toNum(inv?.costInsuranceFreight?.amountSgd),
-    0,
-  );
-  const totalItemGst = invoices.reduce(
-    (sum, inv) => sum + toNum(inv?.gst?.amountSgd),
-    0,
-  ); // swap source if item-level GST exists in your data
-  const totalGstValue = totalItemGst;
-  const totalAmountPayable = totalGstValue;
+  // ---------------- Load draft whenever selection changes ----------------
 
-  // group invoice / item amounts by currency
-  const invoiceByCurrency = {};
-  invoices.forEach((inv) => {
-    const cur = inv?.invoiceValue?.currency || "";
-    invoiceByCurrency[cur] =
-      (invoiceByCurrency[cur] || 0) + toNum(inv?.invoiceValue?.amount);
-  });
+  const loadSavedIntoDraft = async (itemNoOrIndex) => {
+    const row =
+      typeof itemNoOrIndex === "number" &&
+      !savedRawItems.some((i) => i.ItemNo === itemNoOrIndex)
+        ? savedRawItems[itemNoOrIndex]
+        : savedRawItems.find((i) => i.ItemNo === itemNoOrIndex);
+    if (!row) return;
 
-  const qtySpec = ITEM_FIELD_SPECS.find((s) => s.key === "quantity");
-  const itemByCurrency = {}; // no per-item currency in this schema — using totalValue only
-  items.forEach((row) => {
-    itemByCurrency["—"] =
-      (itemByCurrency["—"] || 0) +
-      toNum(row[findRowKey(row, totalSpec.aliases)]);
-  });
+    let draft = buildEditDraftFromSavedRow(row, hsCodeSuggestions);
 
-  const set = (field, value) => onEdit([field], value);
-
-  const showPermitFunction = () => {
-    const text = data.PreviousPermitNo?.trim()
-      ? `PREVIOUS PERMIT NO : ${data.PreviousPermitNo}`
-      : "PREVIOUS PERMIT NO :";
-    set(
-      "TradeRemarks",
-      (data.TradeRemarks || "") + (data.TradeRemarks ? "\n" : "") + text,
+    const matchedInvoice = invoiceNumbers.find(
+      (inv) => inv.InvoiceNo === draft.InvoiceNo,
     );
+    if (matchedInvoice) {
+      draft = {
+        ...draft,
+        UnitPriceCurrency: matchedInvoice.TICurrency,
+        ExchangeRate: matchedInvoice.TIExRate,
+      };
+    }
+
+    onEdit(["itemDraft"], draft);
+    setSelection({ type: "saved", itemNo: row.ItemNo ?? itemNoOrIndex });
+
+    if (!permitId) return;
+    try {
+      const res = await API.get(`/getCasc/${permitId}/`);
+      const filtered = (res.data || []).filter(
+        (c) => String(c.ItemNo) === String(row.ItemNo),
+      );
+      const maxCascBoxes = 3;
+      const finalCasc = Array.from({ length: maxCascBoxes }, () => ({
+        code: "",
+        hsQuantity: 0,
+        uom: "",
+        casc: [],
+      }));
+      filtered.forEach((c) => {
+        const cascIndex =
+          parseInt(String(c.CASCId).replace("Casc", ""), 10) - 1;
+        if (cascIndex < 0 || cascIndex >= maxCascBoxes) return;
+        if (!finalCasc[cascIndex].code) {
+          finalCasc[cascIndex] = {
+            ...finalCasc[cascIndex],
+            code: c.ProductCode,
+            hsQuantity: c.Quantity,
+            uom: c.ProductUOM,
+          };
+        }
+        finalCasc[cascIndex].casc.push([
+          c.CascCode1 || "",
+          c.CascCode2 || "",
+          c.CascCode3 || "",
+        ]);
+      });
+      const hasCasc = filtered.length > 0;
+      onEdit(["itemDraft"], {
+        ...draft,
+        ItemCasc: finalCasc,
+        ItemCascChecked: hasCasc,
+        ShowItemCasc: hasCasc,
+      });
+    } catch (err) {
+      console.error("CASC fetch failed", err);
+    }
+  };
+  const loadPendingIntoDraft = (index) => {
+    const raw = unsavedRawItems[index];
+    if (!raw) return;
+    // As-is from the n8n response — HSCode, Description, TotalLineAmount,
+    // InvoiceQuantity come straight from normalizeIncomingItem's mapping.
+    // HAWB is NOT taken from here; effectiveHawb below always sources it
+    // from the Cargo tab instead.
+    onEdit(["itemDraft"], normalizeIncomingItem(raw));
+    setSelection({ type: "pending", index });
   };
 
-  const showExRate = () => {
-    const grouped = {};
-    invoices.forEach((inv) => {
-      const cur = inv?.invoiceValue?.currency || "";
-      grouped[cur] = (grouped[cur] || 0) + toNum(inv?.invoiceValue?.exRate);
-    });
-    const text = Object.keys(grouped)
-      .map(
-        (cur) =>
-          `CURRENCY : ${cur} , EXCHANGE RATE : ${grouped[cur].toFixed(6)}`,
-      )
-      .join("\n");
-    set(
-      "TradeRemarks",
-      (data.TradeRemarks || "") + (data.TradeRemarks ? "\n" : "") + text,
-    );
+  const handleNewItem = () => {
+    onEdit(["itemDraft"], blankItem());
+    setSelection({ type: "blank" });
   };
 
-  const applyFormatRemark = () => {
-    set(
-      "TradeRemarks",
-      (data.TradeRemarks || "").replaceAll("\n", data.FormatRemark || ""),
-    );
-    set("FormatRemark", "");
+  // Prefill on first render only (selection was initialized to the first
+  // pending item above) — push that data into itemDraft once.
+  const itemDraft = {
+    ...blankItem(),
+    ...(selection.type === "pending" && !data.itemDraft
+      ? normalizeIncomingItem(unsavedRawItems[selection.index])
+      : {}),
+    ...(data.itemDraft || {}),
   };
 
-  const gridStyle = {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-    gap: "8px 10px",
-    marginBottom: 10,
+  const handleSaved = (savedItem) => {
+    const alreadySaved = savedRawItems.some((i) => i.ItemNo === editingItemNo);
+    const nextSavedItems = alreadySaved
+      ? savedRawItems.map((i) => (i.ItemNo === editingItemNo ? savedItem : i))
+      : [...savedRawItems, savedItem];
+
+    // Remove the specific pending item that was just saved (whichever badge
+    // was open), not blindly the first one.
+    const remainingUnsaved =
+      selection.type === "pending"
+        ? unsavedRawItems.filter((_, idx) => idx !== selection.index)
+        : unsavedRawItems;
+
+    onEdit(["items"], [...remainingUnsaved, ...nextSavedItems]);
+    onEdit(["itemDraft"], blankItem());
+    setSelection({ type: "blank" });
+  };
+
+  // Combined badge click: saved item, pending item, or toggle back to blank
+  // if the same badge is clicked again.
+  const handleSavedBadgeClick = (itemNo) => {
+    if (selection.type === "saved" && selection.itemNo === itemNo) {
+      handleNewItem();
+    } else {
+      loadSavedIntoDraft(itemNo);
+    }
+  };
+
+  const handlePendingBadgeClick = (index) => {
+    if (selection.type === "pending" && selection.index === index) {
+      handleNewItem();
+    } else {
+      loadPendingIntoDraft(index);
+    }
+  };
+
+  const handleDeleteRow = async (itemNo) => {
+    setDeletingItemNo(itemNo);
+    try {
+      await API.post("/deleteItem/", { ItemNos: [itemNo], PermitId: permitId });
+      try {
+        await API.post("inpayment/deleteInItem/", {
+          ItemNos: [itemNo],
+          PermitId: permitId,
+        });
+      } catch (mirrorErr) {
+        alert(
+          `Warning: Item No ${itemNo} was deleted from CommonItemDtl but FAILED to delete from ItemDtl. ` +
+            `Please contact support or retry.\n\nError: ${mirrorErr.response?.data?.error || mirrorErr.message}`,
+        );
+      }
+      onEdit(
+        ["items"],
+        [
+          ...unsavedRawItems,
+          ...savedRawItems.filter((i) => i.ItemNo !== itemNo),
+        ],
+      );
+      if (editingItemNo === itemNo) {
+        onEdit(["itemDraft"], blankItem());
+        setSelection({ type: "blank" });
+      }
+    } catch (error) {
+      alert(
+        error.response?.data?.error ||
+          "Failed to delete item, check console for details",
+      );
+    } finally {
+      setDeletingItemNo(null);
+    }
   };
 
   return (
-    <div
-      style={{
-        background: "#e9f1f8",
-        border: `1px solid ${C.panelBorder}`,
-        borderRadius: 8,
-        padding: 16,
-      }}
-    >
-      <div style={gridStyle}>
-        <SummaryInputBox
-          label="NO OF INVOICES"
-          value={invoices.length}
-          readOnly
-        />
-        <SummaryInputBox label="NO OF ITEMS" value={items.length} readOnly />
-        <SummaryInputBox
-          label="SUM OF ITEM VALUE"
-          value={money(sumItemValue)}
-          readOnly
-        />
-        <SummaryInputBox
-          label="TOTAL INVOICE CIF VALUE"
-          value={money(totalInvoiceCif)}
-          readOnly
-        />
-
-        <SummaryInputBox
-          label="TOTAL CIF/FOB VALUE"
-          value={money(totalInvoiceCif)}
-          readOnly
-        />
-        <SummaryInputBox
-          label="TOTAL GST VALUE"
-          value={money(totalGstValue)}
-          readOnly
-        />
-        <SummaryInputBox label="EXCISE DUTY" value="0.00" readOnly />
-        <SummaryInputBox label="CUSTOMS DUTY" value="0.00" readOnly />
-
-        <SummaryInputBox label="OTHER TAX" value="0.00" readOnly />
-        <SummaryInputBox
-          label="TOTAL AMOUNT PAYABLE"
-          value={money(totalAmountPayable)}
-          readOnly
-        />
-        <div>
-          <div
-            style={{
-              fontSize: 11.5,
-              fontWeight: 700,
-              color: C.navy,
-              marginBottom: 4,
-            }}
-          >
-            SUM OF INVOICE AMOUNT
-          </div>
-          {Object.entries(invoiceByCurrency).length === 0 ? (
-            <SummaryInputBox value="" readOnly />
-          ) : (
-            Object.entries(invoiceByCurrency).map(([cur, amt]) => (
-              <div
-                key={cur}
-                style={{ display: "flex", gap: 6, marginBottom: 4 }}
-              >
-                <input
-                  value={cur}
-                  readOnly
-                  style={{
-                    width: 60,
-                    border: `1px solid ${C.inputBorder}`,
-                    borderRadius: 4,
-                    padding: "4px 6px",
-                    background: "#eef2f5",
-                  }}
-                />
-                <input
-                  value={money(amt)}
-                  readOnly
-                  style={{
-                    flex: 1,
-                    border: `1px solid ${C.inputBorder}`,
-                    borderRadius: 4,
-                    padding: "4px 6px",
-                    background: "#eef2f5",
-                  }}
-                />
-              </div>
-            ))
-          )}
-        </div>
-        <div>
-          <div
-            style={{
-              fontSize: 11.5,
-              fontWeight: 700,
-              color: C.navy,
-              marginBottom: 4,
-            }}
-          >
-            SUM OF ITEM AMOUNT
-          </div>
-          {Object.entries(itemByCurrency).map(([cur, amt]) => (
-            <div key={cur} style={{ display: "flex", gap: 6, marginBottom: 4 }}>
-              <input
-                value={cur}
-                readOnly
-                style={{
-                  width: 60,
-                  border: `1px solid ${C.inputBorder}`,
-                  borderRadius: 4,
-                  padding: "4px 6px",
-                  background: "#eef2f5",
-                }}
-              />
-              <input
-                value={money(amt)}
-                readOnly
-                style={{
-                  flex: 1,
-                  border: `1px solid ${C.inputBorder}`,
-                  borderRadius: 4,
-                  padding: "4px 6px",
-                  background: "#eef2f5",
-                }}
-              />
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div style={gridStyle}>
-        <SummaryInputBox
-          label="APPROVED BY"
-          value={data.ApprovedBy}
-          onChange={(v) => set("ApprovedBy", v)}
-        />
-        <SummaryInputBox
-          label="CUSTOMER REMARKS"
-          value={data.CustomerRemarks}
-          onChange={(v) => set("CustomerRemarks", v)}
-          wide
-        />
-      </div>
-
+    <div>
       <div
         style={{
           display: "flex",
-          alignItems: "flex-end",
-          gap: 10,
-          marginBottom: 10,
-          flexWrap: "wrap",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 14,
         }}
       >
-        <div style={{ fontSize: 11.5, fontWeight: 700, color: C.navy }}>
-          TRADER REMARKS
-        </div>
-        <button type="button" onClick={showPermitFunction} style={btnStyle}>
-          PREV PERMIT NUMBER
-        </button>
-        <button type="button" onClick={showExRate} style={btnStyle}>
-          EX. RATE
-        </button>
-        <SummaryInputBox
-          label="FORMAT REMARKS"
-          value={data.FormatRemark}
-          onChange={(v) => set("FormatRemark", v)}
-        />
-        <button type="button" onClick={applyFormatRemark} style={btnStyle}>
-          CONFIG
-        </button>
-        <SummaryInputBox
-          label="CROSS REFERENCE"
-          value={data.CrossReference}
-          onChange={(v) => set("CrossReference", v)}
-          wide
-        />
-      </div>
-
-      <textarea
-        value={data.TradeRemarks || ""}
-        onChange={(e) => set("TradeRemarks", e.target.value)}
-        style={{
-          width: "100%",
-          minHeight: 90,
-          boxSizing: "border-box",
-          padding: 8,
-          fontSize: 12.5,
-          border: `1px solid ${C.inputBorder}`,
-          borderRadius: 4,
-          marginBottom: 12,
-          fontFamily: "inherit",
-        }}
-      />
-
-      <SummaryInputBox
-        label="INTERNAL REMARKS"
-        value={data.InternalRemarks}
-        onChange={(v) => set("InternalRemarks", v)}
-      />
-
-      <div
-        style={{
-          background: C.bar,
-          color: C.barText,
-          fontWeight: 800,
-          fontSize: 12,
-          letterSpacing: 0.4,
-          textAlign: "center",
-          padding: "8px 0",
-          borderRadius: 4,
-          margin: "16px 0 10px",
-        }}
-      >
-        DECLARATION SUMMARY
-      </div>
-
-      <div style={gridStyle}>
-        <SummaryInputBox
-          label="IMPORTER"
-          value={`${importer.CRUEI || ""}-${importer.Name || ""}`}
-          readOnly
-          wide
-        />
-        <SummaryInputBox label="HAWB/HBL" value={data.Hawb} readOnly wide />
-        <SummaryInputBox label="MAWB/OBL" value={data.Mawb} readOnly wide />
-        <SummaryInputBox
-          label="GROSS WEIGHT"
-          value={`${data.TotalGrossWeight || ""}-${data.TotalGrossWeightUnit || ""}`}
-          readOnly
-          wide
-        />
-        <SummaryInputBox
-          label="NO OF PACKING"
-          value={`${data.TotalOuterPack || ""}-${data.TotalOuterPackUnit || ""}`}
-          readOnly
-          wide
-        />
-        <SummaryInputBox
-          label="TOTAL ITEM GST"
-          value={money(totalItemGst)}
-          readOnly
-          wide
-        />
-        <SummaryInputBox
-          label="INVOICE AMOUNT"
-          value={Object.entries(invoiceByCurrency)
-            .map(([c, a]) => `${c} : ${money(a)}`)
-            .join(", ")}
-          readOnly
-          wide
-        />
-        <SummaryInputBox
-          label="TOTAL INVOICE GST"
-          value={money(totalItemGst)}
-          readOnly
-          wide
-        />
-      </div>
-
-      <div
-        style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}
-      >
-        <input
-          type="checkbox"
-          checked={!!data.DeclarationChecked}
-          onChange={(e) => set("DeclarationChecked", e.target.checked)}
-          style={{ width: 16, height: 16, accentColor: C.bar }}
-        />
-        <span style={{ fontSize: 12.5, color: C.navy, fontWeight: 600 }}>
-          I/WE DECLARE THAT ALL PARTICULARS IN THIS APPLICATION ARE TRUE AND
-          CORRECT
-        </span>
-      </div>
-    </div>
-  );
-}
-
-const btnStyle = {
-  border: "none",
-  background: C.bar,
-  color: "#fff",
-  fontWeight: 700,
-  fontSize: 10,
-  padding: "4px 9px",
-  borderRadius: 3,
-  cursor: "pointer",
-};
-
-function seedHeaderDefaults(d) {
-  let result = d;
-  HEADER_FIELD_SPECS.forEach((spec) => {
-    if (spec.default === undefined) return;
-    const existingKey = findRowKey(result, spec.aliases);
-    const raw = existingKey ? result[existingKey] : undefined;
-    const hasValue = raw !== undefined && raw !== null && raw !== "";
-    if (!hasValue) {
-      result = setDeep(result, [existingKey || spec.key], spec.default);
-    }
-  });
-  return result;
-}
-
-function seedCargoUnitDefaults(d) {
-  let result = d;
-  const seedUnit = (spec) => {
-    const unitKey = findRowKey(result, spec.unitAliases);
-    const hasUnit = unitKey && result[unitKey];
-    if (!hasUnit && spec.defaultUnit) {
-      result = setDeep(
-        result,
-        [unitKey || `${spec.key}Unit`],
-        spec.defaultUnit,
-      );
-    }
-  };
-  seedUnit(CARGO_FIELD_SPECS.totalOuterPack);
-  seedUnit(CARGO_FIELD_SPECS.totalGrossWeight);
-  return result;
-}
-
-function seedHawbDefault(d) {
-  const hawbKey = findRowKey(d, CARGO_FIELD_SPECS.hawb.aliases);
-  const hasHawb = hawbKey && d[hawbKey];
-  if (hasHawb) return d;
-
-  const consignmentNoKey = findRowKey(d, ["consignmentno"]);
-  const consignmentNo = consignmentNoKey ? d[consignmentNoKey] : "";
-  if (!consignmentNo) return d;
-
-  return setDeep(d, [hawbKey || CARGO_FIELD_SPECS.hawb.key], consignmentNo);
-}
-
-function seedTotalGrossWeightDefault(d) {
-  const grossKey = findRowKey(d, CARGO_FIELD_SPECS.totalGrossWeight.aliases);
-  const hasGross = grossKey && d[grossKey] !== "" && d[grossKey] != null;
-  if (hasGross) return d;
-
-  const totalWeightKey = findRowKey(d, ["totalweight"]);
-  const totalWeight = totalWeightKey ? d[totalWeightKey] : "";
-  if (totalWeight === "" || totalWeight == null) return d;
-
-  return setDeep(
-    d,
-    [grossKey || CARGO_FIELD_SPECS.totalGrossWeight.key],
-    String(totalWeight),
-  );
-}
-
-export default function DeclarationPanel({ email, declaration, onSave, busy }) {
-  const buildData = (raw) =>
-    seedHawbDefault(
-      seedTotalGrossWeightDefault(
-        seedCargoUnitDefaults(
-          seedHeaderDefaults(
-            deepUpperCaseTopLevelExcept(
-              raw ?? blankDeclaration(),
-              HEADER_SELECT_KEYS,
-            ),
-          ),
-        ),
-      ),
-    );
-  const buildAll = (raw) => {
-    const rawList = normalizeDeclarations(raw);
-    return rawList.map((r) => buildData(r ?? blankDeclaration()));
-  };
-
-  const [dataList, setDataList] = useState(() => buildAll(declaration));
-  const [pageIndex, setPageIndex] = useState(0);
-  const [activeTab, setActiveTab] = useState("header");
-
-  const buildInitialIdentities = (list) =>
-    list.map((d) => {
-      const permitKey = findRowKey(d, ["permitid"]);
-      const permitVal = permitKey ? d[permitKey] : "";
-      if (!permitVal) return null; // fresh declaration — needs explicit "New"
-      const jobKey = findRowKey(d, ["jobid"]);
-      const msgKey = findRowKey(d, ["msgid"]);
-      return {
-        PermitId: permitVal,
-        JobId: jobKey ? d[jobKey] : "",
-        MSGId: msgKey ? d[msgKey] : "",
-        Refid: d.Refid || "",
-        TradeNetMailboxID: d.TradeNetMailboxID || "",
-        DeclarantCompanyCode: d.DeclarantCompanyCode || d.DeclarantCode || "",
-        source: "existing",
-      };
-    });
-
-  const [pageIdentities, setPageIdentities] = useState(() =>
-    buildInitialIdentities(buildAll(declaration)),
-  );
-  const [generatingNew, setGeneratingNew] = useState(false);
-
-  useEffect(() => {
-    const list = buildAll(declaration);
-    setDataList(list);
-    setPageIndex(0);
-    setActiveTab("header");
-    setPageIdentities(buildInitialIdentities(list));
-    setGeneratingNew(false);
-  }, [declaration, email?.id]);
-
-  const data = dataList[pageIndex] || blankDeclaration();
-  const hasMultiple = dataList.length > 1;
-
-  const handleUseSinglePermitForAll = async () => {
-    if (!hasMultiple) return;
-
-    setGeneratingNew(true);
-    try {
-      let identity = pageIdentities[pageIndex];
-      if (!identity) {
-        const res = await API.get(`inpaymentnew/?user=${DEFAULT_TOUCH_USER}`);
-        if (!res.data?.PermitId) throw new Error("Failed to generate PermitId");
-        identity = {
-          PermitId: res.data.PermitId,
-          JobId: res.data.JobId,
-          MSGId: res.data.MsgId,
-          Refid: res.data.RefId,
-          TradeNetMailboxID: res.data.TradeNetMailboxID,
-          DeclarantCompanyCode: res.data.DeclarantCode,
-          source: "generated",
-        };
-      }
-
-      setPageIdentities((prev) => prev.map(() => identity));
-      setDataList((prev) =>
-        prev.map((d) => setDeep(d, ["PermitId"], identity.PermitId)),
-      );
-    } catch (err) {
-      console.error("Use single permit failed:", err);
-      alert(
-        "Failed to set a single Permit ID for all declarations. Please try again.",
-      );
-    } finally {
-      setGeneratingNew(false);
-    }
-  };
-
-  const handleNewPermit = async (idx = pageIndex) => {
-    setGeneratingNew(true);
-    try {
-      const res = await API.get(`inpaymentnew/?user=${DEFAULT_TOUCH_USER}`);
-      if (!res.data?.PermitId) throw new Error("Failed to generate PermitId");
-
-      const identity = {
-        PermitId: res.data.PermitId,
-        JobId: res.data.JobId,
-        MSGId: res.data.MsgId,
-        Refid: res.data.RefId,
-        TradeNetMailboxID: res.data.TradeNetMailboxID,
-        DeclarantCompanyCode: res.data.DeclarantCode,
-        source: "generated",
-      };
-
-      setPageIdentities((prev) => {
-        const next = prev.slice();
-        next[idx] = identity;
-        return next;
-      });
-      setDataList((prev) =>
-        prev.map((d, i) =>
-          i === idx ? setDeep(d, ["PermitId"], identity.PermitId) : d,
-        ),
-      );
-    } catch (err) {
-      console.error("New permit failed:", err);
-      alert("Failed to generate a new Permit ID. Please try again.");
-    } finally {
-      setGeneratingNew(false);
-    }
-  };
-
-  const handleEdit = (path, value) => {
-    const skipUpperCase =
-      path.length === 1 && HEADER_SELECT_KEYS.has(normalizeKey(path[0]));
-    setDataList((prev) =>
-      prev.map((d, i) =>
-        i === pageIndex
-          ? setDeep(d, path, skipUpperCase ? value : deepUpperCase(value))
-          : d,
-      ),
-    );
-  };
-
-  const withSupplierDefault = (d) => {
-    const supplierCode = d.invoice?.supplier?.code;
-    if (!supplierCode || !String(supplierCode).trim()) {
-      return setDeep(d, ["invoice", "supplier", "code"], "-");
-    }
-    return d;
-  };
-
-  const postHeader = async (d, ids) => {
-    const items = Array.isArray(d.items) ? d.items : [];
-    const invoices = Array.isArray(d.invoices) ? d.invoices : [];
-
-    const toNum = (v) => {
-      const n = parseFloat(v);
-      return isNaN(n) ? 0 : n;
-    };
-
-    const totalCIFFOBValue = invoices.reduce(
-      (sum, inv) => sum + toNum(inv?.costInsuranceFreight?.amountSgd),
-      0,
-    );
-    const totalGSTTaxAmt = invoices.reduce(
-      (sum, inv) => sum + toNum(inv?.gst?.amountSgd),
-      0,
-    );
-
-    const payload = {
-      PermitId: ids.PermitId,
-      JobId: ids.JobId,
-      MSGId: ids.MSGId,
-      Refid: ids.Refid,
-      TradeNetMailboxID: ids.TradeNetMailboxID,
-      DeclarantCompanyCode: ids.DeclarantCompanyCode,
-      MessageType: d.MessageType || "IPTDEC",
-      DeclarationType: d.DeclarationType,
-      PreviousPermit: d.PreviousPermitNo,
-      CargoPackType: d.CargoPackType,
-      InwardTransportMode: d.InwardTransportMode,
-      BGIndicator: d.BgIndicator,
-      SupplyIndicator: d.SupplyIndicator,
-      ReferenceDocuments: d.ReferenceDocument,
-      ImporterCompanyCode: d.Importer?.Code,
-      InwardCarrierAgentCode: d.InwardCarrierAgent?.Code,
-      FreightForwarderCode: d.FreightForwarder?.Code,
-      ClaimantPartyCode: d.ClaimantParty?.Code,
-      HBL: d.Hawb,
-      ArrivalDate: toApiDate(d.ArrivalDate),
-      LoadingPortCode: d.LoadingPort?.Code,
-      FlightNO: d.FlightNumber,
-      AircraftRegNo: d.AircraftRegNo,
-      MasterAirwayBill: d.Mawb,
-      ReleaseLocation: d.ReleaseLocation?.Code,
-      ResLoaName: d.ReleaseLocation?.Name,
-      RecepitLocation: d.ReceiptLocation?.Code,
-      RecepitLocName: d.ReceiptLocation?.Name,
-      TotalOuterPack: d.TotalOuterPack,
-      TotalOuterPackUOM: d.TotalOuterPackUnit,
-      TotalGrossWeight: d.TotalGrossWeight,
-      TotalGrossWeightUOM: d.TotalGrossWeightUnit,
-      PermitGrossWeight: d.PermitGrossWeight,
-      BlanketStartDate: toApiDate(d.BlanketStartDate),
-
-      NumberOfItems: items.length,
-      TotalCIFFOBValue: totalCIFFOBValue,
-      TotalGSTTaxAmt: totalGSTTaxAmt,
-      TotalExDutyAmt: 0,
-      TotalCusDutyAmt: 0,
-      TotalODutyAmt: 0,
-      TotalAmtPay: totalGSTTaxAmt,
-      Status: "LLMNEW",
-      prmtStatus: "NEW",
-      PermitNumber: "",
-      Cnb: "N",
-      DeclareIndicator: "Y",
-      DeclarningFor: "--Select--",
-      GrossReference: "",
-      TradeRemarks: "",
-      InternalRemarks: "",
-      CustomerRemarks: "",
-
-      TouchUser: DEFAULT_TOUCH_USER,
-      TouchTime: new Date().toISOString(),
-    };
-
-    // ← NEW: log the exact payload being sent
-    console.log("postCommonHeaderTable payload:", payload);
-
-    await API.post("/postCommonHeaderTable/", payload);
-  };
-
-  const handleSaveCurrent = async () => {
-    const ids = pageIdentities[pageIndex];
-    if (!ids) {
-      alert('Click "New" first to generate a Permit ID for this declaration.');
-      return;
-    }
-    try {
-      const toSave = withSupplierDefault(
-        setDeep(data, ["PermitId"], ids.PermitId),
-      );
-
-      await postHeader(toSave, ids);
-
-      if (hasMultiple) {
-        onSave(toSave, pageIndex);
-      } else {
-        onSave(toSave);
-      }
-    } catch (err) {
-      console.error("Save failed:", err);
-      if (ids.source === "generated") {
-        setPageIdentities((prev) => {
-          const next = prev.slice();
-          next[pageIndex] = null;
-          return next;
-        });
-      }
-      alert(
-        (err.message || "Failed to save.") +
-          (ids.source === "generated"
-            ? " Please click New again to retry with a new Permit ID."
-            : " Please try saving again."),
-      );
-    }
-  };
-
-  const handleSaveAll = async () => {
-    const missing = dataList.map((_, i) => i).filter((i) => !pageIdentities[i]);
-    if (missing.length) {
-      alert(
-        `Click "New" first for declaration page(s): ${missing.map((i) => i + 1).join(", ")}`,
-      );
-      return;
-    }
-    try {
-      for (let i = 0; i < dataList.length; i++) {
-        const ids = pageIdentities[i];
-        const d = withSupplierDefault(
-          setDeep(dataList[i], ["PermitId"], ids.PermitId),
-        );
-        await postHeader(d, ids);
-        onSave(d, i);
-      }
-    } catch (err) {
-      console.error("Save all failed:", err);
-      alert(
-        (err.message || "Failed to save all.") +
-          " Please retry the failed page(s).",
-      );
-    }
-  };
-
-  const currentIdentity = pageIdentities[pageIndex];
-  const canSave = !!email && !busy && !!data && !!currentIdentity;
-
-  return (
-    <aside className="declaration-panel">
-      <div className="decl-toolbar">
-        <button className="decl-button decl-button-amber">Draft</button>
-        <button className="decl-button decl-button-red">Query</button>
-        <button
-          className="decl-button"
-          disabled={generatingNew}
-          onClick={() => handleNewPermit(pageIndex)}
-          title="Generate a new Permit ID for this declaration only"
+        <div
+          style={{
+            background: C.bar,
+            color: C.barText,
+            fontWeight: 800,
+            fontSize: 11.5,
+            letterSpacing: 0.4,
+            padding: "7px 16px",
+            borderRadius: 4,
+          }}
         >
-          {generatingNew ? "Generating…" : "New"}
-        </button>
-        {hasMultiple && (
+          ITEMS
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ color: C.sub, fontWeight: 700, fontSize: 11.5 }}>
+            {normalizedItems.length}{" "}
+            {normalizedItems.length === 1 ? "item" : "items"}
+            {unsavedRawItems.length > 0 &&
+              ` (+${unsavedRawItems.length} pending import)`}
+          </span>
           <button
-            className="decl-button"
-            disabled={generatingNew}
-            onClick={handleUseSinglePermitForAll}
-            title="Use one shared Permit ID across all declarations found in this email"
+            type="button"
+            onClick={handleNewItem}
+            style={{
+              border: `1.5px dashed ${C.bar}`,
+              background: "transparent",
+              color: C.bar,
+              fontWeight: 700,
+              fontSize: 12,
+              padding: "6px 12px",
+              borderRadius: 6,
+              cursor: "pointer",
+            }}
           >
-            {generatingNew ? "Generating…" : "Use One Permit For All"}
+            + New Item
           </button>
-        )}
-        {activeTab === "summary" && (
-          <div className="decl-body-save">
-            <button
-              className="decl-button decl-button-verdigris"
-              disabled={!canSave}
-              onClick={handleSaveCurrent}
-            >
-              {busy ? "Saving…" : hasMultiple ? "Save Page" : "Save"}
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="decl-scroll">
-        <div className="decl-header">
-          <div>
-            <h2>{email?.subject || "Untitled declaration"}</h2>
-            <div className="decl-sub">{email?.sender || ""}</div>
-            {currentIdentity?.PermitId && (
-              <div className="decl-sub" style={{ fontWeight: 700 }}>
-                Permit ID: {currentIdentity.PermitId}
-              </div>
-            )}
-          </div>
-          {email && <StatusStamp status={email.status} />}
-        </div>
-
-        {hasMultiple && (
-          <DeclarationPageBar
-            dataList={dataList}
-            activeIndex={pageIndex}
-            onChange={setPageIndex}
-            pageIdentities={pageIdentities}
-          />
-        )}
-
-        <div className="decl-body">
-          {!currentIdentity ? (
-            <div
-              style={{
-                border: `1px dashed ${C.panelBorder}`,
-                borderRadius: 8,
-                padding: 24,
-                textAlign: "center",
-                color: C.sub,
-                background: "#fafcfd",
-              }}
-            >
-              <div
-                style={{
-                  fontWeight: 700,
-                  fontSize: 13,
-                  marginBottom: 8,
-                  color: C.navy,
-                }}
-              >
-                No Permit ID yet
-              </div>
-              <div style={{ fontSize: 12.5, marginBottom: 14 }}>
-                Click <strong>New</strong> above to generate a Permit ID before
-                editing this declaration.
-              </div>
-              <button
-                className="decl-button decl-button-verdigris"
-                disabled={generatingNew}
-                onClick={() => handleNewPermit(pageIndex)}
-              >
-                {generatingNew ? "Generating…" : "New"}
-              </button>
-            </div>
-          ) : (
-            <>
-              <TabBar active={activeTab} onChange={setActiveTab} />
-
-              {activeTab === "header" && (
-                <HeaderTabContent data={data} onEdit={handleEdit} />
-              )}
-              {activeTab === "party" && (
-                <PartyTabContent data={data} onEdit={handleEdit} />
-              )}
-              {activeTab === "cargo" && (
-                <CargoTabContent data={data} onEdit={handleEdit} />
-              )}
-              {activeTab === "invoice" && (
-                <InvoiceTabContent
-                  data={data}
-                  onEdit={handleEdit}
-                  permitId={currentIdentity?.PermitId}
-                />
-              )}
-              {activeTab === "items" && (
-                <ItemsTabContent
-                  data={data}
-                  onEdit={handleEdit}
-                  permitId={currentIdentity?.PermitId}
-                  user={{ username: DEFAULT_TOUCH_USER }}
-                />
-              )}
-              {activeTab === "summary" && (
-                <SummaryTabContent data={data} onEdit={handleEdit} />
-              )}
-              <details style={{ marginTop: 16 }}>
-                <summary style={{ cursor: "pointer", color: "var(--muted)" }}>
-                  Raw response
-                </summary>
-                <pre
-                  style={{
-                    fontSize: 12,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                    background: "rgba(0,0,0,0.03)",
-                    padding: 12,
-                    borderRadius: 6,
-                    marginTop: 8,
-                  }}
-                >
-                  {JSON.stringify(
-                    hasMultiple ? { declarations: dataList, pageIndex } : data,
-                    null,
-                    2,
-                  )}
-                </pre>
-              </details>
-
-              <div className="decl-body-save">
-                <button
-                  className="decl-button decl-button-verdigris"
-                  disabled={!canSave}
-                  onClick={handleSaveCurrent}
-                >
-                  {busy ? "Saving…" : hasMultiple ? "Save Page" : "Save"}
-                </button>
-              </div>
-            </>
-          )}
         </div>
       </div>
-    </aside>
+
+      {/* CIRCLE BADGES — saved items (blue) + pending n8n items (amber),
+          all clickable. Clicking a pending badge loads that item's
+          HSCode/Description/TotalLineAmount/InvoiceQuantity as-is into the
+          form below; HAWB always comes from the Cargo tab regardless. */}
+      {(normalizedItems.length > 0 || unsavedRawItems.length > 0) && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            marginBottom: 14,
+          }}
+        >
+          {normalizedItems.map((it, idx) => (
+            <ItemNumberBadge
+              key={it.ItemNo ?? `saved-${idx}`}
+              number={it.ItemNo ?? idx + 1}
+              active={
+                selection.type === "saved" && selection.itemNo === it.ItemNo
+              }
+              controlled={it.IsControlled}
+              onClick={() => handleSavedBadgeClick(it.ItemNo ?? idx)}
+            />
+          ))}
+          {unsavedRawItems.map((_, idx) => (
+            <ItemNumberBadge
+              key={`pending-${idx}`}
+              number={nextItemNo + idx}
+              active={selection.type === "pending" && selection.index === idx}
+              pending
+              onClick={() => handlePendingBadgeClick(idx)}
+            />
+          ))}
+        </div>
+      )}
+
+      <ItemFieldsEditor
+        item={itemDraft}
+        path={["itemDraft"]}
+        onEdit={onEdit}
+        invoiceNumbers={invoiceNumbers}
+        declarationType={data.DeclarationType}
+        totalGrossWeight={data.TotalGrossWeight}
+        permitId={permitId}
+        user={user}
+        itemNumber={editingItemNo || pendingBadgeNo || nextItemNo}
+        editingItemNo={editingItemNo}
+        onSaved={handleSaved}
+        cargoHawbList={cargoHawbList}
+      />
+
+      <ItemsTableSection
+        items={normalizedItems}
+        onEditRow={handleSavedBadgeClick}
+        onDeleteRow={handleDeleteRow}
+        deletingItemNo={deletingItemNo}
+      />
+    </div>
   );
 }

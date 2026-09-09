@@ -22,6 +22,17 @@ function fmt(val, decimals = 2) {
   return isNaN(num) ? (0).toFixed(decimals) : num.toFixed(decimals);
 }
 
+function normalizeSelectPlaceholders(payload) {
+  const fixed = { ...payload };
+  Object.keys(fixed).forEach((key) => {
+    const v = fixed[key];
+    if (typeof v === "string" && v.trim().toUpperCase() === "--SELECT--") {
+      fixed[key] = "--Select--";
+    }
+  });
+  return fixed;
+}
+
 function makeCachedListHook(endpoint) {
   const cache = { list: null };
   return function useCachedList() {
@@ -206,9 +217,19 @@ function parseFlag(v) {
 function computeHsLogicFields(hsRow) {
   if (!hsRow) return null;
   const {
-    HSCode, UOM, DUTYTYPID, Kgmvisible, DuitableUom,
-    Excisedutyuom, Excisedutyrate, Customsdutyuom, Customsdutyrate, Inpayment,
+    HSCode,
+    UOM,
+    DUTYTYPID: RawDutyTypeId,
+    Kgmvisible,
+    DuitableUom,
+    Excisedutyuom,
+    Excisedutyrate,
+    Customsdutyuom,
+    Customsdutyrate,
+    Inpayment,
   } = hsRow;
+
+  const DUTYTYPID = Number(RawDutyTypeId);
 
   const patch = {
     DutyTypeId: DUTYTYPID,
@@ -223,13 +244,13 @@ function computeHsLogicFields(hsRow) {
 
     HSUOM: UOM || "--Select--",
     CorrectUom: UOM || "",
-    DutiableUOM: UOM || "--Select--",
-    TotalDutiableUOM: DuitableUom || "--Select--",
+    DutiableUOM: UOM || "",
+    TotalDutiableUOM: DuitableUom || "",
 
     ExciseDutyRate: 0,
-    ExciseDutyUOM: "--Select--",
+    ExciseDutyUOM: "",
     CustomsDutyRate: 0,
-    CustomsDutyUOM: "--Select--",
+    CustomsDutyUOM: "0.00",
   };
 
   if (Number(Inpayment) === 1) {
@@ -253,7 +274,10 @@ function computeHsLogicFields(hsRow) {
       patch.ShowAlcohol = true;
       patch.ShowPacking = true;
       patch.PackingChecked = true;
-    } else if ((DUTYTYPID === 63 && UOM === "KGM") || (DUTYTYPID === 62 && UOM !== "LTR")) {
+    } else if (
+      (DUTYTYPID === 63 && UOM === "KGM") ||
+      (DUTYTYPID === 62 && UOM !== "LTR")
+    ) {
       patch.ShowDutiableQuantity = true;
     } else {
       patch.ShowDutiableQuantity = true;
@@ -299,6 +323,8 @@ function computeHsLogicFields(hsRow) {
     patch.ShowDutiableQuantity = true;
     patch.ShowOptionalCharges = true;
     applyDutyDefaults();
+    patch.DutiableUOM = UOM;
+    patch.TotalDutiableUOM = DuitableUom;
   }
 
   return patch;
@@ -1568,7 +1594,7 @@ function ItemFieldsEditor({
     OutHAWBOBL: "",
 
     DutiableQty: item.DutiableQty || 0,
-
+    TotalDutiableQty: item.TotalDutiableQty || 0,
     DutiableUOM: item.DutiableUOM || "--Select--",
     TotalDutiableUOM: item.TotalDutiableUOM || "--Select--",
     InvoiceQuantity: item.InvoiceQuantity || 0,
@@ -1594,7 +1620,7 @@ function ItemFieldsEditor({
     InPUOM: item.InPUOM || "--Select--",
     ImPQty: item.ImPQty || 0,
     ImPUOM: item.ImPUOM || "--Select--",
-    PreferentialCode: item.PreferentialCode || "",
+    PreferentialCode: item.PreferentialCode || "--Select--",
     GSTRate: item.GSTRate,
     GSTUOM: item.GSTUOM || "",
     GSTAmount: item.GSTAmount || 0,
@@ -1638,7 +1664,7 @@ function ItemFieldsEditor({
     if (!validateItem()) return;
 
     const itemNo = editingItemNo || itemNumber;
-    const payload = buildItemPayload(itemNo);
+    const payload = normalizeSelectPlaceholders(buildItemPayload(itemNo));
 
     setIsSaving(true);
     try {
