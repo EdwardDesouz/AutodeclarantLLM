@@ -1144,18 +1144,54 @@ function ItemFieldsEditor({
         : "";
   // ---------------- Invoice Quantity -> HS Quantity conversion ----------------
 
-  const itemInvoiceQuantityFunction = () => {
+  // const itemInvoiceQuantityFunction = () => {
+  //   const itemqty = parseFloat(item.InvoiceQuantity);
+  //   if (!itemqty) return;
+  //   const hsopt = item.HSUOM;
+  //   let total;
+  //   if (hsopt === "TEN" || hsopt === "TPR") total = itemqty / 10;
+  //   else if (hsopt === "CEN") total = itemqty / 100;
+  //   else if (hsopt === "MIL" || hsopt === "TNE") total = itemqty / 1000;
+  //   else if (hsopt === "MTK") total = itemqty * 3.213;
+  //   else if (hsopt === "LTR" || hsopt === "KGM") total = itemqty * 1;
+  //   else total = itemqty;
+
+  //   if (
+  //     (hsopt === "KGM" || hsopt === "LTR" || hsopt === "TNE") &&
+  //     totalGrossWeight &&
+  //     itemqty > Number(totalGrossWeight)
+  //   ) {
+  //     alert(
+  //       "The Total Gross Weight is Less Than The Sum Of The Item Weight Please Check!!!",
+  //     );
+  //   }
+
+  //   if (item.HSQty === "0.00" || item.HSQty === "" || itemqty !== 0) {
+  //     set("HSQty", total.toFixed(4));
+  //   }
+  // };
+
+  const convertQtyToHs = (itemqty, hsopt) => {
+    if (hsopt === "TEN" || hsopt === "TPR") return itemqty / 10;
+    if (hsopt === "CEN") return itemqty / 100;
+    if (hsopt === "MIL" || hsopt === "TNE") return itemqty / 1000;
+    if (hsopt === "MTK") return itemqty * 3.213;
+    return itemqty; // LTR, KGM and everything else are 1:1
+  };
+
+  // Invoice Quantity -> HS Quantity, live (no blur needed)
+  useEffect(() => {
     const itemqty = parseFloat(item.InvoiceQuantity);
     if (!itemqty) return;
-    const hsopt = item.HSUOM;
-    let total;
-    if (hsopt === "TEN" || hsopt === "TPR") total = itemqty / 10;
-    else if (hsopt === "CEN") total = itemqty / 100;
-    else if (hsopt === "MIL" || hsopt === "TNE") total = itemqty / 1000;
-    else if (hsopt === "MTK") total = itemqty * 3.213;
-    else if (hsopt === "LTR" || hsopt === "KGM") total = itemqty * 1;
-    else total = itemqty;
+    const next = convertQtyToHs(itemqty, item.HSUOM).toFixed(4);
+    if (item.HSQty !== next) set("HSQty", next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.InvoiceQuantity, item.HSUOM]);
 
+  // Gross-weight sanity check stays on blur so it doesn't fire mid-typing
+  const warnIfOverGrossWeight = () => {
+    const itemqty = parseFloat(item.InvoiceQuantity);
+    const hsopt = item.HSUOM;
     if (
       (hsopt === "KGM" || hsopt === "LTR" || hsopt === "TNE") &&
       totalGrossWeight &&
@@ -1164,10 +1200,6 @@ function ItemFieldsEditor({
       alert(
         "The Total Gross Weight is Less Than The Sum Of The Item Weight Please Check!!!",
       );
-    }
-
-    if (item.HSQty === "0.00" || item.HSQty === "" || itemqty !== 0) {
-      set("HSQty", total.toFixed(4));
     }
   };
 
@@ -1306,32 +1338,77 @@ function ItemFieldsEditor({
     }
   };
 
-  const invoiceTotalLineAmountFunction = () => {
-    const itotalAmount = Number(item.TotalLineAmount) || 0;
-    const icurrinput = Number(item.ExchangeRate) || 0;
-    let totalAmd = 0;
-    let totInvoiceAmd = 0;
-    invoiceNumbers.forEach((i) => {
-      if (item.InvoiceNo === i.InvoiceNo) {
-        totalAmd =
-          Number(i.OTCSAmount) + Number(i.FCSAmount) + Number(i.ICSAmount);
-        totInvoiceAmd = Number(i.TISAmount);
+  // const invoiceTotalLineAmountFunction = () => {
+  //   const itotalAmount = Number(item.TotalLineAmount) || 0;
+  //   const icurrinput = Number(item.ExchangeRate) || 0;
+  //   let totalAmd = 0;
+  //   let totInvoiceAmd = 0;
+  //   invoiceNumbers.forEach((i) => {
+  //     if (item.InvoiceNo === i.InvoiceNo) {
+  //       totalAmd =
+  //         Number(i.OTCSAmount) + Number(i.FCSAmount) + Number(i.ICSAmount);
+  //       totInvoiceAmd = Number(i.TISAmount);
+  //     }
+  //   });
+  //   if (totInvoiceAmd === 0) return;
+  //   const invoiceAmd = totalAmd / totInvoiceAmd;
+  //   const totalLineAmd = icurrinput * itotalAmount;
+  //   const invoiceCharge = invoiceAmd * totalLineAmd;
+
+  //   set("InvoiceCharges", invoiceCharge.toFixed(2));
+  //   const total2 = totalLineAmd + invoiceCharge;
+  //   set("CIFFOB", total2.toFixed(2));
+
+  //   if ((item.HSCode || "").startsWith("87")) {
+  //     const vehicleExcise = (total2 * Number(item.ExciseDutyRate)) / 100;
+  //     set("ExciseDutyAmount", vehicleExcise.toFixed(2));
+  //   }
+  // };
+
+  // Total Line Amount -> Invoice Charges / CIF-FOB, live, and also
+  // recalculates whenever the selected InvoiceNo changes (since that
+  // changes ExchangeRate and the matched invoice's charge totals).
+  useEffect(() => {
+    const lineAmount = Number(item.TotalLineAmount) || 0;
+    const exRate = Number(item.ExchangeRate) || 0;
+    const totalLineAmd = exRate * lineAmount;
+
+    const matched = invoiceNumbers.find((i) => i.InvoiceNo === item.InvoiceNo);
+    let invoiceCharge = 0;
+    if (matched) {
+      const totalAmd =
+        Number(matched.OTCSAmount) +
+        Number(matched.FCSAmount) +
+        Number(matched.ICSAmount);
+      const totInvoiceAmd = Number(matched.TISAmount);
+      if (totInvoiceAmd) {
+        invoiceCharge = (totalAmd / totInvoiceAmd) * totalLineAmd;
       }
-    });
-    if (totInvoiceAmd === 0) return;
-    const invoiceAmd = totalAmd / totInvoiceAmd;
-    const totalLineAmd = icurrinput * itotalAmount;
-    const invoiceCharge = invoiceAmd * totalLineAmd;
-
-    set("InvoiceCharges", invoiceCharge.toFixed(2));
-    const total2 = totalLineAmd + invoiceCharge;
-    set("CIFFOB", total2.toFixed(2));
-
-    if ((item.HSCode || "").startsWith("87")) {
-      const vehicleExcise = (total2 * Number(item.ExciseDutyRate)) / 100;
-      set("ExciseDutyAmount", vehicleExcise.toFixed(2));
     }
-  };
+
+    const cif = totalLineAmd + invoiceCharge;
+
+    if (fmt(invoiceCharge) !== fmt(item.InvoiceCharges)) {
+      set("InvoiceCharges", invoiceCharge.toFixed(2));
+    }
+    if (fmt(cif) !== fmt(item.CIFFOB)) {
+      set("CIFFOB", cif.toFixed(2));
+    }
+    if ((item.HSCode || "").startsWith("87")) {
+      const vehicleExcise = (cif * Number(item.ExciseDutyRate || 0)) / 100;
+      if (fmt(vehicleExcise) !== fmt(item.ExciseDutyAmount)) {
+        set("ExciseDutyAmount", vehicleExcise.toFixed(2));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    item.TotalLineAmount,
+    item.ExchangeRate,
+    item.InvoiceNo,
+    item.HSCode,
+    item.ExciseDutyRate,
+    invoiceNumbers,
+  ]);
 
   // ---------------- Sum exchange rate (unit price section) ----------------
 
@@ -1925,11 +2002,19 @@ function ItemFieldsEditor({
               />
             </div>
           </Field>
-          <Field label="Invoice Quantity">
+          {/* <Field label="Invoice Quantity">
             <EditableInput
               value={item.InvoiceQuantity}
               onChange={(v) => set("InvoiceQuantity", v)}
               onBlur={itemInvoiceQuantityFunction}
+              placeholder="0.00"
+            />
+          </Field> */}
+          <Field label="Invoice Quantity">
+            <EditableInput
+              value={item.InvoiceQuantity}
+              onChange={(v) => set("InvoiceQuantity", v)}
+              onBlur={warnIfOverGrossWeight}
               placeholder="0.00"
             />
           </Field>
@@ -2027,7 +2112,7 @@ function ItemFieldsEditor({
 
         <div style={{ marginTop: 10 }}>
           <Grid cols={2}>
-            <Field
+            {/* <Field
               label="Total Line Amount"
               error={fieldErrors.TotalLineAmount}
             >
@@ -2035,6 +2120,17 @@ function ItemFieldsEditor({
                 value={item.TotalLineAmount}
                 onChange={(v) => set("TotalLineAmount", v)}
                 onBlur={invoiceTotalLineAmountFunction}
+                placeholder="0.00"
+              />
+            </Field> */}
+
+            <Field
+              label="Total Line Amount"
+              error={fieldErrors.TotalLineAmount}
+            >
+              <EditableInput
+                value={item.TotalLineAmount}
+                onChange={(v) => set("TotalLineAmount", v)}
                 placeholder="0.00"
               />
             </Field>

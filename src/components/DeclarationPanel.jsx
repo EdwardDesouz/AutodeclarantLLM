@@ -403,7 +403,6 @@ function LocationSuggestField({
       setShowDropdown(false);
     }, 150);
   };
-
   return (
     <div
       style={{
@@ -1076,13 +1075,24 @@ function blankParty() {
   return { code: "", uen: "", name: "", name1: "" };
 }
 
+export const SUPPLIER_PLACEHOLDER = "-";
+
+function blankSupplier() {
+  return {
+    code: SUPPLIER_PLACEHOLDER,
+    uen: SUPPLIER_PLACEHOLDER,
+    name: SUPPLIER_PLACEHOLDER,
+    name1: SUPPLIER_PLACEHOLDER,
+  };
+}
+
 function blankValueRow() {
   return { charges: "", currency: "", exRate: "", amount: "", amountSgd: "" };
 }
 
 function blankInvoice() {
   return {
-    supplier: blankParty(),
+    supplier: blankSupplier(),
     importer: blankParty(),
     serialNumber: "",
     invoiceDate: "",
@@ -1417,12 +1427,14 @@ function InvoiceSupplierField({ supplier, onEdit }) {
     setShowDropdown(matches.length > 0);
   };
 
+  const orDash = (v) => (v && String(v).trim() ? v : SUPPLIER_PLACEHOLDER);
+
   const applyItem = (item) => {
     const [code, cruei, name, name1] = item.split(":");
-    onEdit(["invoice", "supplier", "code"], code || "");
-    onEdit(["invoice", "supplier", "uen"], cruei || "");
-    onEdit(["invoice", "supplier", "name"], name || "");
-    onEdit(["invoice", "supplier", "name1"], name1 || "");
+    onEdit(["invoice", "supplier", "code"], orDash(code));
+    onEdit(["invoice", "supplier", "uen"], orDash(cruei));
+    onEdit(["invoice", "supplier", "name"], orDash(name));
+    onEdit(["invoice", "supplier", "name1"], orDash(name1));
   };
 
   const handleCodeChange = (val) => {
@@ -1473,7 +1485,7 @@ function InvoiceSupplierField({ supplier, onEdit }) {
   };
 
   const handleSave = async () => {
-    if (!supplier.code) {
+    if (!supplier.code || supplier.code.trim() === SUPPLIER_PLACEHOLDER) {
       alert("Code is required!");
       return;
     }
@@ -4750,6 +4762,21 @@ function seedTotalGrossWeightDefault(d) {
   );
 }
 
+function seedSupplierPlaceholder(d) {
+  let result = d;
+  ["code", "uen", "name", "name1"].forEach((k) => {
+    const current = d.invoice?.supplier?.[k];
+    if (current === "" || current == null) {
+      result = setDeep(
+        result,
+        ["invoice", "supplier", k],
+        SUPPLIER_PLACEHOLDER,
+      );
+    }
+  });
+  return result;
+}
+
 export default function DeclarationPanel({
   email,
   declaration,
@@ -4759,13 +4786,15 @@ export default function DeclarationPanel({
   onDeselectEmail,
 }) {
   const buildData = (raw) =>
-    seedHawbDefault(
-      seedTotalGrossWeightDefault(
-        seedCargoUnitDefaults(
-          seedHeaderDefaults(
-            deepUpperCaseTopLevelExcept(
-              raw ?? blankDeclaration(),
-              HEADER_SELECT_KEYS,
+    seedSupplierPlaceholder(
+      seedHawbDefault(
+        seedTotalGrossWeightDefault(
+          seedCargoUnitDefaults(
+            seedHeaderDefaults(
+              deepUpperCaseTopLevelExcept(
+                raw ?? blankDeclaration(),
+                HEADER_SELECT_KEYS,
+              ),
             ),
           ),
         ),
