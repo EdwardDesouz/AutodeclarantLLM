@@ -3132,25 +3132,6 @@ function HeaderTabContent({ data, onEdit }) {
 }
 
 function PartyTabContent({ data, onEdit }) {
-  const receiverName = getNestedCI(data, ["receiver"], ["name"]);
-  const importerRaw = data.Importer;
-  const dataForImporter = {
-    ...data,
-    Importer: importerRaw
-      ? {
-          Code: importerRaw.Code ?? "",
-          CRUEI: importerRaw.CRUEI ?? "",
-          Name: importerRaw.Name ?? "",
-          Name1: importerRaw.Name1 ?? "",
-        }
-      : {
-          Code: receiverName || "",
-          CRUEI: "",
-          Name: receiverName || "",
-          Name1: "",
-        },
-  };
-
   return (
     <div
       style={{
@@ -3162,18 +3143,13 @@ function PartyTabContent({ data, onEdit }) {
         background: "#fafcfd",
       }}
     >
-      <MasterPartyField
-        type="importer"
-        data={dataForImporter}
-        onEdit={onEdit}
-      />
+      <MasterPartyField type="importer" data={data} onEdit={onEdit} />
       <MasterPartyField type="inwardCarrierAgent" data={data} onEdit={onEdit} />
       <MasterPartyField type="freightForwarder" data={data} onEdit={onEdit} />
       <MasterPartyField type="claimantParty" data={data} onEdit={onEdit} />
     </div>
   );
 }
-
 const CARGO_FIELD_SPECS = {
   totalOuterPack: {
     key: "TotalOuterPack",
@@ -4777,6 +4753,35 @@ function seedSupplierPlaceholder(d) {
   return result;
 }
 
+function seedMasterParties(d) {
+  let result = d;
+  Object.values(PARTY_TYPES).forEach((cfg) => {
+    const existing = isPlainObject(result[cfg.dataKey])
+      ? result[cfg.dataKey]
+      : {};
+    result = setDeep(result, [cfg.dataKey], {
+      ...blankMasterParty(cfg),
+      ...existing,
+    });
+  });
+  return result;
+}
+
+function seedImporterFromReceiver(d) {
+  const imp = d.Importer;
+  if (isPlainObject(imp) && (imp.Code || imp.Name)) return d;
+
+  const receiverName = getNestedCI(d, ["receiver"], ["name"]);
+  if (!receiverName) return d;
+
+  return setDeep(d, ["Importer"], {
+    Code: receiverName,
+    CRUEI: imp?.CRUEI || "",
+    Name: receiverName,
+    Name1: imp?.Name1 || "",
+  });
+}
+
 export default function DeclarationPanel({
   email,
   declaration,
@@ -4786,14 +4791,18 @@ export default function DeclarationPanel({
   onDeselectEmail,
 }) {
   const buildData = (raw) =>
-    seedSupplierPlaceholder(
-      seedHawbDefault(
-        seedTotalGrossWeightDefault(
-          seedCargoUnitDefaults(
-            seedHeaderDefaults(
-              deepUpperCaseTopLevelExcept(
-                raw ?? blankDeclaration(),
-                HEADER_SELECT_KEYS,
+    seedImporterFromReceiver(
+      seedMasterParties(
+        seedSupplierPlaceholder(
+          seedHawbDefault(
+            seedTotalGrossWeightDefault(
+              seedCargoUnitDefaults(
+                seedHeaderDefaults(
+                  deepUpperCaseTopLevelExcept(
+                    raw ?? blankDeclaration(),
+                    HEADER_SELECT_KEYS,
+                  ),
+                ),
               ),
             ),
           ),
@@ -5381,7 +5390,7 @@ export default function DeclarationPanel({
               {activeTab === "summary" && (
                 <SummaryTabContent data={data} onEdit={handleEdit} />
               )}
-              <details style={{ marginTop: 16 }}>
+              {/* <details style={{ marginTop: 16 }}>
                 <summary style={{ cursor: "pointer", color: "var(--muted)" }}>
                   Raw response
                 </summary>
@@ -5402,7 +5411,7 @@ export default function DeclarationPanel({
                     2,
                   )}
                 </pre>
-              </details>
+              </details> */}
 
               {activeTab === "summary" && (
                 <div className="decl-body-save">
