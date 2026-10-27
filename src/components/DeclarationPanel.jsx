@@ -4782,6 +4782,52 @@ function seedImporterFromReceiver(d) {
   });
 }
 
+
+
+function mergeMailDeclaration(d, md, index = 0, total = 1) {
+  if (!isPlainObject(md)) return d;
+
+  const blank = (v) => v === "" || v == null;
+  let r = d;
+
+  const put = (key, value, onlyIfEmpty = false) => {
+    const existing = findRowKey(r, [normalizeKey(key)]);
+    if (onlyIfEmpty && existing && !blank(r[existing])) return;
+    r = setDeep(r, [existing || key], deepUpperCase(value));
+  };
+
+  // Shared by every declaration in the mail: the mail value wins.
+  ["FlightNumber", "ArrivalDate", "Mawb"].forEach(
+    (k) => md[k] && put(k, md[k]),
+  );
+
+  const lp = findRowKey(r, ["loadingport"]);
+  if (md.LoadingPort && !(lp && r[lp]?.Code)) {
+    put("LoadingPort", md.LoadingPort);
+  }
+
+  // HAWB: keep the declaration's own ConsignmentNo if it has one.
+  const cons = findRowKey(r, ["consignmentno"]);
+  if (md.Hawb && !(cons && r[cons])) {
+    const list = md.Hawb.split(", ");
+    put("Hawb", total === 1 ? md.Hawb : list[index] || "", true);
+  }
+
+  if (total === 1) {
+    // One declaration: the mail totals belong to it.
+    ["TotalOuterPack", "TotalGrossWeight", "TotalGrossWeightUnit"].forEach(
+      (k) => md[k] && put(k, md[k], true),
+    );
+  } else {
+    // Several declarations: use each file's own parcel count from n8n.
+    const parcelsKey = findRowKey(r, ["noofparcels"]);
+    const parcels = parcelsKey ? r[parcelsKey] : "";
+    if (!blank(parcels)) put("TotalOuterPack", String(parcels), true);
+    // Weight is not split across files, so it stays empty for the user to fill.
+  }
+
+  return r;
+}
 export default function DeclarationPanel({
   email,
   declaration,
@@ -4790,7 +4836,7 @@ export default function DeclarationPanel({
   onDismissEmail,
   onDeselectEmail,
 }) {
-  const buildData = (raw) =>
+  const buildData = (raw, index = 0, total = 1) =>
     seedImporterFromReceiver(
       seedMasterParties(
         seedSupplierPlaceholder(
@@ -4798,9 +4844,14 @@ export default function DeclarationPanel({
             seedTotalGrossWeightDefault(
               seedCargoUnitDefaults(
                 seedHeaderDefaults(
-                  deepUpperCaseTopLevelExcept(
-                    raw ?? blankDeclaration(),
-                    HEADER_SELECT_KEYS,
+                  mergeMailDeclaration(
+                    deepUpperCaseTopLevelExcept(
+                      raw ?? blankDeclaration(),
+                      HEADER_SELECT_KEYS,
+                    ),
+                    email?.mail_declaration,
+                    index,
+                    total,
                   ),
                 ),
               ),
@@ -4809,9 +4860,12 @@ export default function DeclarationPanel({
         ),
       ),
     );
+
   const buildAll = (raw) => {
     const rawList = normalizeDeclarations(raw);
-    return rawList.map((r) => buildData(r ?? blankDeclaration()));
+    return rawList.map((r, i) =>
+      buildData(r ?? blankDeclaration(), i, rawList.length),
+    );
   };
 
   const [dataList, setDataList] = useState(() => buildAll(declaration));
@@ -4853,7 +4907,7 @@ export default function DeclarationPanel({
     setActiveTab("header");
     setPageIdentities(buildInitialIdentities(list));
     setGeneratingNew(false);
-  }, [declaration, email?.id]);
+  }, [declaration, email?.id, email?.mail_declaration]);
 
   const data = dataList[pageIndex] || blankDeclaration();
   const hasMultiple = dataList.length > 1;
