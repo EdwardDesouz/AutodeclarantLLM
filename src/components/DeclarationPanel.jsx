@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FaSearch, FaPlus } from "react-icons/fa";
+import { FaSearch, FaPlus, FaChevronDown } from "react-icons/fa";
 import StatusStamp from "./StatusStamp";
 import API from "../api/api";
 import ItemsTabContent from "./itemTab";
@@ -182,6 +182,8 @@ function getNestedCI(obj, outerAliases, innerAliases) {
 
 const PARTY_TOP_LEVEL_FIELDS = ["shipper", "receiver"];
 const PARTY_TOP_LEVEL_FIELD_KEYS = PARTY_TOP_LEVEL_FIELDS.map(normalizeKey);
+
+const DEFAULT_IMPORTER_CRUEI = "99999990000C";
 
 const PARTY_TYPES = {
   importer: {
@@ -2168,6 +2170,20 @@ function MasterPartyField({ type, data, onEdit }) {
   const [filtered, setFiltered] = useState([]);
   const [highlighted, setHighlighted] = useState(0);
 
+  const [showCrueiDropdown, setShowCrueiDropdown] = useState(false);
+  const crueiWrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!showCrueiDropdown) return;
+    const onDocMouseDown = (e) => {
+      if (crueiWrapRef.current && !crueiWrapRef.current.contains(e.target)) {
+        setShowCrueiDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [showCrueiDropdown]);
+
   useEffect(() => {
     if (!cfg.defaultCode) return;
     if (!list.length) return;
@@ -2416,12 +2432,54 @@ function MasterPartyField({ type, data, onEdit }) {
           )}
         </PartyFieldCell>
         <PartyFieldCell label="CRUEI">
-          <EditableInput
-            compact
-            value={party.CRUEI}
-            onChange={(v) => onEdit([...path, "CRUEI"], v)}
-            placeholder="CRUEI"
-          />
+          <div ref={crueiWrapRef} style={{ position: "relative" }}>
+            <EditableInput
+              compact
+              value={party.CRUEI}
+              onChange={(v) => onEdit([...path, "CRUEI"], v)}
+              placeholder="CRUEI"
+            />
+            {type === "importer" && (
+              <>
+                <button
+                  type="button"
+                  title="Select CRUEI"
+                  onClick={() => setShowCrueiDropdown((v) => !v)}
+                  style={{
+                    position: "absolute",
+                    right: 1,
+                    top: 1,
+                    bottom: 1,
+                    width: 24,
+                    border: "none",
+                    borderLeft: `1px solid ${C.inputBorder}`,
+                    background: C.tabIdleBg,
+                    color: C.bar,
+                    borderRadius: "0 3px 3px 0",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 0,
+                  }}
+                >
+                  <FaChevronDown style={{ fontSize: 10 }} />
+                </button>
+                {showCrueiDropdown && (
+                  <PartySearchDropdown
+                    items={[{ CRUEI: DEFAULT_IMPORTER_CRUEI }]}
+                    highlighted={0}
+                    onHover={() => {}}
+                    onSelect={(item) => {
+                      onEdit([...path, "CRUEI"], item.CRUEI);
+                      setShowCrueiDropdown(false);
+                    }}
+                    getLabel={(item) => item.CRUEI}
+                  />
+                )}
+              </>
+            )}
+          </div>
         </PartyFieldCell>
       </PartyFieldRow>
 
@@ -4781,8 +4839,6 @@ function seedImporterFromReceiver(d) {
     Name1: imp?.Name1 || "",
   });
 }
-
-
 
 function mergeMailDeclaration(d, md, index = 0, total = 1) {
   if (!isPlainObject(md)) return d;

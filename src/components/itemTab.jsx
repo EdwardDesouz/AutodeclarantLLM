@@ -109,8 +109,8 @@ function blankItem() {
     HSCode: "",
     Description: "",
     DGIndicator: false,
-    Unbranded: false,
-    Brand: "",
+    Unbranded: true,
+    Brand: "UNBRANDED",
     Model: "",
     Country: "",
     CountryDescription: "",
@@ -1911,7 +1911,11 @@ function ItemFieldsEditor({
                 label="DG Indicator"
               />
               <Checkbox
-                checked={item.Unbranded}
+                checked={
+                  String(item.Brand || "")
+                    .trim()
+                    .toUpperCase() === "UNBRANDED"
+                }
                 onChange={handleUnbrandedChange}
                 label="Unbranded"
               />
