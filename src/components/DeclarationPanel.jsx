@@ -183,7 +183,7 @@ function getNestedCI(obj, outerAliases, innerAliases) {
 const PARTY_TOP_LEVEL_FIELDS = ["shipper", "receiver"];
 const PARTY_TOP_LEVEL_FIELD_KEYS = PARTY_TOP_LEVEL_FIELDS.map(normalizeKey);
 
-const DEFAULT_IMPORTER_CRUEI = "99999990000C";
+const DEFAULT_IMPORTER_CRUEI = ["99999990000C", "1234"];
 
 const PARTY_TYPES = {
   importer: {
@@ -2171,6 +2171,7 @@ function MasterPartyField({ type, data, onEdit }) {
   const [highlighted, setHighlighted] = useState(0);
 
   const [showCrueiDropdown, setShowCrueiDropdown] = useState(false);
+  const [crueiHighlighted, setCrueiHighlighted] = useState(0);
   const crueiWrapRef = useRef(null);
 
   useEffect(() => {
@@ -2432,52 +2433,57 @@ function MasterPartyField({ type, data, onEdit }) {
           )}
         </PartyFieldCell>
         <PartyFieldCell label="CRUEI">
-          <div ref={crueiWrapRef} style={{ position: "relative" }}>
+          <div style={{ position: "relative" }}>
             <EditableInput
               compact
               value={party.CRUEI}
               onChange={(v) => onEdit([...path, "CRUEI"], v)}
+              onKeyDown={(e) => {
+                if (type !== "importer") return;
+                const list = DEFAULT_IMPORTER_CRUEI;
+                const current = list.indexOf(party.CRUEI);
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  onEdit([...path, "CRUEI"], list[(current + 1) % list.length]);
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  onEdit(
+                    [...path, "CRUEI"],
+                    list[current <= 0 ? list.length - 1 : current - 1],
+                  );
+                }
+              }}
               placeholder="CRUEI"
             />
             {type === "importer" && (
-              <>
-                <button
-                  type="button"
-                  title="Select CRUEI"
-                  onClick={() => setShowCrueiDropdown((v) => !v)}
-                  style={{
-                    position: "absolute",
-                    right: 1,
-                    top: 1,
-                    bottom: 1,
-                    width: 24,
-                    border: "none",
-                    borderLeft: `1px solid ${C.inputBorder}`,
-                    background: C.tabIdleBg,
-                    color: C.bar,
-                    borderRadius: "0 3px 3px 0",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: 0,
-                  }}
-                >
-                  <FaChevronDown style={{ fontSize: 10 }} />
-                </button>
-                {showCrueiDropdown && (
-                  <PartySearchDropdown
-                    items={[{ CRUEI: DEFAULT_IMPORTER_CRUEI }]}
-                    highlighted={0}
-                    onHover={() => {}}
-                    onSelect={(item) => {
-                      onEdit([...path, "CRUEI"], item.CRUEI);
-                      setShowCrueiDropdown(false);
-                    }}
-                    getLabel={(item) => item.CRUEI}
-                  />
-                )}
-              </>
+              <button
+                type="button"
+                title="Fill default CRUEI"
+                onClick={() => {
+                  const list = DEFAULT_IMPORTER_CRUEI;
+                  const current = list.indexOf(party.CRUEI);
+                  onEdit([...path, "CRUEI"], list[(current + 1) % list.length]);
+                }}
+                style={{
+                  position: "absolute",
+                  right: 1,
+                  top: 1,
+                  bottom: 1,
+                  width: 24,
+                  border: "none",
+                  borderLeft: `1px solid ${C.inputBorder}`,
+                  background: C.tabIdleBg,
+                  color: C.bar,
+                  borderRadius: "0 3px 3px 0",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 0,
+                }}
+              >
+                <FaChevronDown style={{ fontSize: 10 }} />
+              </button>
             )}
           </div>
         </PartyFieldCell>
