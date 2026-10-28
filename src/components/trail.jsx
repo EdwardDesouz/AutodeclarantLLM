@@ -4649,11 +4649,14 @@ function runValidation(d) {
     fail("header", "CHECK THE INWARD TRANSPORT MODE");
 
   // ── Party ──
-  if (!(d.Importer?.Code || "").trim()) fail("party", "CHECK THE IMPORTER CRUEI");
-  if (!(d.Importer?.Name || "").trim()) fail("party", "CHECK THE IMPORTER NAME");
+  if (!(d.Importer?.Code || "").trim())
+    fail("party", "CHECK THE IMPORTER CRUEI");
+  if (!(d.Importer?.Name || "").trim())
+    fail("party", "CHECK THE IMPORTER NAME");
 
   // ── Freight Forwarder <-> HAWB cross validation ──
-  const isHawbMode = d.InwardTransportMode === "4 : Air" || !d.InwardTransportMode;
+  const isHawbMode =
+    d.InwardTransportMode === "4 : Air" || !d.InwardTransportMode;
   const hasFreightForwarder = !!(d.FreightForwarder?.Code || "").trim();
   const hasHawb = !!(d.Hawb || "").trim();
   if (isHawbMode) {
@@ -4711,7 +4714,8 @@ async function checkPartyMasterTables(d) {
     try {
       const res = await API.get(cfg.commonEndpoint);
       const exists = (res.data || []).some(
-        (row) => String(row[codeKey] || "").toLowerCase() === code.toLowerCase(),
+        (row) =>
+          String(row[codeKey] || "").toLowerCase() === code.toLowerCase(),
       );
       if (!exists) missing.push({ label: check.label, code });
     } catch (err) {
@@ -4874,10 +4878,9 @@ function PartyNotSavedModal({ missing, onClose, onGoToPartyTab }) {
               marginBottom: 16,
             }}
           >
-            The following code(s) are filled but{" "}
-            <strong>not yet saved</strong> in their master tables. Go to the{" "}
-            <strong>PARTY</strong> tab, save each one, then click{" "}
-            <strong>SAVE</strong> again.
+            The following code(s) are filled but <strong>not yet saved</strong>{" "}
+            in their master tables. Go to the <strong>PARTY</strong> tab, save
+            each one, then click <strong>SAVE</strong> again.
           </div>
           <table
             style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}
@@ -5039,7 +5042,12 @@ function DraftReasonModal({
             This permit will be saved as <strong>DRAFT (DRF)</strong>.
           </div>
           <label
-            style={{ fontWeight: 600, fontSize: 13, display: "block", marginBottom: 6 }}
+            style={{
+              fontWeight: 600,
+              fontSize: 13,
+              display: "block",
+              marginBottom: 6,
+            }}
           >
             WHY ARE YOU SAVING AS DRAFT? <span style={{ color: "red" }}>*</span>
           </label>

@@ -208,6 +208,11 @@ function parseFlag(v) {
   return false;
 }
 
+// Vehicle HS codes: exactly 8 digits, starting with 87 and ending with 87
+function isVehicleHsCode(code) {
+  return /^87\d{4}87$/.test(String(code || "").trim());
+}
+
 // ---------------------------------------------------------------------------
 // HS CODE LOGIC (module scope so both ItemFieldsEditor and
 // buildEditDraftFromSavedRow can call it — this MUST NOT be nested inside
@@ -318,7 +323,7 @@ function computeHsLogicFields(hsRow) {
     patch.TotalDutiableUOM = "--Select--";
   }
 
-  if (HSCode && HSCode.startsWith("87")) {
+  if (isVehicleHsCode(HSCode)) {
     patch.ShowVehicle = true;
     patch.ShowDutiableQuantity = true;
     patch.ShowOptionalCharges = true;
@@ -1108,6 +1113,17 @@ function ItemFieldsEditor({
     const patch = computeHsLogicFields(hsRow);
     if (!patch) return;
     Object.entries(patch).forEach(([k, v]) => set(k, v));
+
+    if (!patch.ShowVehicle) {
+      set("VehicleType", "");
+      set("EngineCapacity", "");
+      set("EngineCapacityUOM", "");
+      set("OriginalRegDate", "");
+      set("OptionalCurrency", "");
+      set("OptionalRate", "");
+      set("OptionalAmountInput", "");
+      set("OptionalCharges", "");
+    }
   };
 
   const handleHsCodeSelect = (hsItem) => {
@@ -1125,6 +1141,7 @@ function ItemFieldsEditor({
         set("ShowPacking", false);
         set("ShowAlcohol", false);
         set("ShowDutiableQuantity", false);
+        set("ShowOptionalCharges", false);
         set("DutiableUOM", "--Select--");
         set("TotalDutiableUOM", "--Select--");
         set("HSUOM", "--Select--");
@@ -1132,6 +1149,10 @@ function ItemFieldsEditor({
         set("ExciseDutyUOM", "--Select--");
         set("CustomsDutyRate", 0);
         set("CustomsDutyUOM", "--Select--");
+      } else if (!isVehicleHsCode(item.HSCode)) {
+        // typed code not found in master and not a vehicle code
+        set("ShowVehicle", false);
+        set("ShowOptionalCharges", false);
       }
       return;
     }
@@ -1227,6 +1248,7 @@ function ItemFieldsEditor({
     if (imp > 0) pckqty = pckqty * imp;
 
     const HsVal = item.HSCode || "";
+    const isVehicle = isVehicleHsCode(HsVal);
     const typeidval = item.DutyTypeId;
     const kgmvis = item.KgmVisible;
     const T1 = parseFloat(item.ExciseDutyRate) || 0;
@@ -1239,7 +1261,7 @@ function ItemFieldsEditor({
     let gst = 0;
 
     const writeExciseAndGst = (qtyForExcise) => {
-      if (!HsVal.startsWith("87")) {
+      if (!isVehicle) {
         excise = qtyForExcise * T1;
         set("ExciseDutyAmount", excise.toFixed(2));
       }
@@ -1272,7 +1294,7 @@ function ItemFieldsEditor({
       totalQty = pckqty * totduti;
       set("TotalDutiableQty", totalQty.toFixed(2));
       writeExciseAndGst(totalQty);
-    } else if (TDQUOM === "NMB" && HsVal.startsWith("87")) {
+    } else if (TDQUOM === "NMB" && isVehicle) {
       excise = (T2 * T1) / 100;
       set("ExciseDutyAmount", excise.toFixed(2));
       gst = T2 * gstperval + excise * gstperval;
@@ -1401,7 +1423,7 @@ function ItemFieldsEditor({
     if (fmt(cif) !== fmt(item.CIFFOB)) {
       set("CIFFOB", cif.toFixed(2));
     }
-    if ((item.HSCode || "").startsWith("87")) {
+    if (isVehicleHsCode(item.HSCode)) {
       const vehicleExcise = (cif * Number(item.ExciseDutyRate || 0)) / 100;
       if (fmt(vehicleExcise) !== fmt(item.ExciseDutyAmount)) {
         set("ExciseDutyAmount", vehicleExcise.toFixed(2));
@@ -2659,6 +2681,12 @@ function buildEditDraftFromSavedRow(raw, hsCodeSuggestions) {
     OptionalAmountInput: raw.OptionalSumtotal || "",
     OptionalCharges: raw.Optioncahrge || "",
   };
+
+  if (isVehicleHsCode(raw.HSCode)) {
+    draft.ShowVehicle = true;
+    draft.ShowOptionalCharges = true;
+    draft.ShowDutiableQuantity = true;
+  }
 
   const hasPacking =
     Number(raw.OPQty) > 0 ||
