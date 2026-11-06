@@ -4,6 +4,7 @@ import StatusStamp from "./StatusStamp";
 import API from "../api/api";
 import ItemsTabContent from "./itemTab";
 import InvoiceTabContent from "./invoiceTab";
+import TabNavFooter from "./TabNavFooter";
 
 export const C = {
   panelBorder: "#c2d7e8",
@@ -350,14 +351,14 @@ function LocationSuggestField({
     const matches = !search
       ? options
       : options.filter((item) => {
-          const c = String(item[codeKey] || "").toLowerCase();
-          const n = String(item[nameKey] || "").toLowerCase();
-          const nameMatches =
-            nameMatch === "startsWith"
-              ? n.startsWith(search)
-              : n.includes(search);
-          return c.startsWith(search) || nameMatches;
-        });
+        const c = String(item[codeKey] || "").toLowerCase();
+        const n = String(item[nameKey] || "").toLowerCase();
+        const nameMatches =
+          nameMatch === "startsWith"
+            ? n.startsWith(search)
+            : n.includes(search);
+        return c.startsWith(search) || nameMatches;
+      });
     setFiltered(matches.slice(0, 100));
     setShowDropdown(matches.length > 0);
   };
@@ -1527,7 +1528,7 @@ function InvoiceSupplierField({ supplier, onEdit }) {
       );
       alert(
         err.response?.data?.error ||
-          "Failed to save Supplier/Manufacturer, check console for details",
+        "Failed to save Supplier/Manufacturer, check console for details",
       );
     }
   };
@@ -2299,10 +2300,10 @@ function MasterPartyField({ type, data, onEdit }) {
     const name1 = (party.Name1 || "").toUpperCase();
     const claimantExtra = cfg.hasClaimantNameFields
       ? {
-          ClaimantName: (party.ClaimantName || "").toUpperCase(),
-          ClaimantName1: (party.ClaimantName1 || "").toUpperCase(),
-          Name2: "",
-        }
+        ClaimantName: (party.ClaimantName || "").toUpperCase(),
+        ClaimantName1: (party.ClaimantName1 || "").toUpperCase(),
+        Name2: "",
+      }
       : {};
     const touchUser = DEFAULT_TOUCH_USER;
     const touchTime = new Date().toISOString();
@@ -2355,14 +2356,14 @@ function MasterPartyField({ type, data, onEdit }) {
       if (commonSaved) {
         alert(
           `Warning: Code "${code}" was saved to Common${cfg.label} but FAILED to save to ${cfg.label} (inpayment) table. ` +
-            `Tables are now inconsistent.\n\nError: ${err.response?.data?.error || err.response?.data?.Result || err.message}`,
+          `Tables are now inconsistent.\n\nError: ${err.response?.data?.error || err.response?.data?.Result || err.message}`,
         );
         commonCodes.add(code.toLowerCase());
       } else {
         alert(
           err.response?.data?.error ||
-            err.response?.data?.Result ||
-            `Failed to save ${cfg.label}, check console for details`,
+          err.response?.data?.Result ||
+          `Failed to save ${cfg.label}, check console for details`,
         );
       }
     }
@@ -5087,6 +5088,11 @@ export default function DeclarationPanel({
     );
   };
 
+  const goToTab = (id) => {
+    setActiveTab(id);
+    document.querySelector(".decl-scroll")?.scrollTo({ top: 0 });
+  };
+
   const withSupplierDefault = (d) => {
     const supplierCode = d.invoice?.supplier?.code;
     if (!supplierCode || !String(supplierCode).trim()) {
@@ -5231,8 +5237,8 @@ export default function DeclarationPanel({
       console.error("Mirror header save failed", mirrorErr);
       alert(
         "Warning: Permit was saved to CommonHeaderTbl but FAILED to mirror to InHeaderTbl. " +
-          "Please contact support or retry.\n\n" +
-          `Error: ${mirrorErr.response?.data?.error || mirrorErr.message}`,
+        "Please contact support or retry.\n\n" +
+        `Error: ${mirrorErr.response?.data?.error || mirrorErr.message}`,
       );
     }
   };
@@ -5292,9 +5298,9 @@ export default function DeclarationPanel({
       }
       alert(
         (err.message || "Failed to save.") +
-          (ids.source === "generated"
-            ? " Please click New again to retry with a new Permit ID."
-            : " Please try saving again."),
+        (ids.source === "generated"
+          ? " Please click New again to retry with a new Permit ID."
+          : " Please try saving again."),
       );
     }
   };
@@ -5506,6 +5512,11 @@ export default function DeclarationPanel({
               {activeTab === "summary" && (
                 <SummaryTabContent data={data} onEdit={handleEdit} />
               )}
+              <TabNavFooter
+                tabs={TABS.map((t) => t.id)}
+                activeTab={activeTab}
+                onChange={goToTab}
+              />
               {/* <details style={{ marginTop: 16 }}>
                 <summary style={{ cursor: "pointer", color: "var(--muted)" }}>
                   Raw response
